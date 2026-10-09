@@ -45,7 +45,8 @@ pub struct manykey_event {
     /// `MANYKEY_EVENT_*`
     pub r#type: u32,
     pub keyboard_id: u64,
-    /// USB HID usage (keyboard page) of the physical key; 0 if unmapped.
+    /// USB HID usage of the physical key; 0 if unmapped. Keyboard-page keys are
+    /// the bare usage; other pages (media, brightness) are `(page << 16) | usage`.
     /// Valid for `MANYKEY_EVENT_KEY`.
     pub key: u32,
     /// Platform-native scancode. Valid for `MANYKEY_EVENT_KEY`.
@@ -124,7 +125,7 @@ impl manykey_context {
             Event::Key(k) => {
                 out.r#type = MANYKEY_EVENT_KEY;
                 out.keyboard_id = k.keyboard.0;
-                out.key = k.key.0 as u32;
+                out.key = k.key.0;
                 out.native_code = k.native_code;
                 out.state = match k.state {
                     KeyState::Released => MANYKEY_KEY_RELEASED,
@@ -275,7 +276,7 @@ pub unsafe extern "C" fn manykey_get_keyboard_info(
 /// needed excluding the NUL, like `snprintf`.
 #[no_mangle]
 pub unsafe extern "C" fn manykey_key_name(key: u32, buf: *mut c_char, len: usize) -> usize {
-    let name = Key(key.min(u16::MAX as u32) as u16).name();
+    let name = Key(key).name();
     if !buf.is_null() && len > 0 {
         let n = name.len().min(len - 1);
         std::ptr::copy_nonoverlapping(name.as_ptr().cast(), buf, n);
@@ -336,7 +337,7 @@ mod tests {
             assert_eq!(manykey_wait(c, &mut ev, 100), 1);
             assert_eq!(ev.r#type, MANYKEY_EVENT_KEY);
             assert_eq!(ev.keyboard_id, id.0);
-            assert_eq!(ev.key, Key::Space.0 as u32);
+            assert_eq!(ev.key, Key::Space.0);
             assert_eq!(ev.state, MANYKEY_KEY_PRESSED);
 
             assert_eq!(manykey_wait(c, &mut ev, 10), 0);
@@ -367,7 +368,7 @@ mod tests {
     fn key_name_truncates_like_snprintf() {
         unsafe {
             let mut buf = [0 as c_char; 4];
-            let need = manykey_key_name(Key::LeftShift.0 as u32, buf.as_mut_ptr(), buf.len());
+            let need = manykey_key_name(Key::LeftShift.0, buf.as_mut_ptr(), buf.len());
             assert_eq!(need, "LeftShift".len());
             assert_eq!(CStr::from_ptr(buf.as_ptr()).to_str().unwrap(), "Lef");
         }

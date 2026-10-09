@@ -39,7 +39,8 @@ typedef struct {
   uint32_t type;
   uint64_t keyboard_id;
   /*
-   USB HID usage (keyboard page) of the physical key; 0 if unmapped.
+   USB HID usage of the physical key; 0 if unmapped. Keyboard-page keys are
+   the bare usage; other pages (media, brightness) are `(page << 16) | usage`.
    Valid for `MANYKEY_EVENT_KEY`.
    */
   uint32_t key;

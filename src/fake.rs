@@ -47,7 +47,7 @@ impl FakeKeyboards {
         self.sink.send(Event::Key(KeyEvent {
             keyboard,
             key,
-            native_code: key.0 as u32,
+            native_code: key.0,
             state,
         }));
     }

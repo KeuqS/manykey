@@ -1,15 +1,17 @@
 //! Cross-platform physical key identity.
 //!
-//! A [`Key`] is a USB HID usage ID on the Keyboard/Keypad page (0x07): it names
-//! a *physical key position*, independent of layout (`Key::A` is the key that
-//! is "A" on a US layout, wherever it sits on an AZERTY board). `Key::UNKNOWN`
+//! A [`Key`] is a USB HID usage ID: it names a *physical key*, independent of
+//! layout (`Key::A` is the key that is "A" on a US layout, wherever it sits on
+//! an AZERTY board). Keys on the Keyboard/Keypad page (0x07) are stored as the
+//! bare usage; keys on any other page are `(page << 16) | usage`, e.g. media
+//! and brightness keys from the Consumer page (0x0C). `Key::UNKNOWN`
 //! (0) means the backend had no mapping; the raw platform code is always
 //! available in `KeyEvent::native_code`.
 
 use std::fmt;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Key(pub u16);
+pub struct Key(pub u32);
 
 macro_rules! keys {
     ($($name:ident = $code:literal),* $(,)?) => {
@@ -18,7 +20,7 @@ macro_rules! keys {
             $(pub const $name: Key = Key($code);)*
         }
 
-        fn known_name(code: u16) -> Option<&'static str> {
+        fn known_name(code: u32) -> Option<&'static str> {
             match code {
                 $($code => Some(stringify!($name)),)*
                 _ => None,
@@ -51,6 +53,10 @@ keys! {
     F13 = 0x68, F14 = 0x69, F15 = 0x6A, F16 = 0x6B, F17 = 0x6C, F18 = 0x6D,
     F19 = 0x6E, F20 = 0x6F, F21 = 0x70, F22 = 0x71, F23 = 0x72, F24 = 0x73,
     Mute = 0x7F, VolumeUp = 0x80, VolumeDown = 0x81,
+    // Consumer page (0x0C). Mute/volume are folded into the keyboard-page keys above.
+    BrightnessUp = 0x000C_006F, BrightnessDown = 0x000C_0070,
+    MediaNext = 0x000C_00B5, MediaPrev = 0x000C_00B6, MediaStop = 0x000C_00B7,
+    MediaPlayPause = 0x000C_00CD,
     LeftCtrl = 0xE0, LeftShift = 0xE1, LeftAlt = 0xE2, LeftGui = 0xE3,
     RightCtrl = 0xE4, RightShift = 0xE5, RightAlt = 0xE6, RightGui = 0xE7,
 }
@@ -87,9 +93,9 @@ impl fmt::Display for Key {
 
 /// Linux evdev `KEY_*` code → HID usage. Unmapped codes give `Key::UNKNOWN`.
 pub fn from_evdev(code: u32) -> Key {
-    let hid: u16 = match code {
+    let hid: u32 = match code {
         1 => 0x29,
-        2..=10 => 0x1E + (code as u16 - 2), // 1..9
+        2..=10 => 0x1E + (code - 2), // 1..9
         11 => 0x27,                         // 0
         12 => 0x2D,
         13 => 0x2E,
@@ -138,7 +144,7 @@ pub fn from_evdev(code: u32) -> Key {
         56 => 0xE2,
         57 => 0x2C,
         58 => 0x39,
-        59..=68 => 0x3A + (code as u16 - 59), // F1..F10
+        59..=68 => 0x3A + (code - 59), // F1..F10
         69 => 0x53,
         70 => 0x47,
         71 => 0x5F, // KP7
@@ -179,7 +185,13 @@ pub fn from_evdev(code: u32) -> Key {
         125 => 0xE3,
         126 => 0xE7,
         127 => 0x65,
-        183..=194 => 0x68 + (code as u16 - 183), // F13..F24
+        163 => 0x000C_00B5, // next song
+        164 => 0x000C_00CD, // play/pause
+        165 => 0x000C_00B6, // previous song
+        166 => 0x000C_00B7, // stop
+        224 => 0x000C_0070, // brightness down
+        225 => 0x000C_006F, // brightness up
+        183..=194 => 0x68 + (code - 183), // F13..F24
         _ => 0,
     };
     Key(hid)
@@ -213,7 +225,12 @@ pub fn from_windows_scancode(code: u32) -> Key {
         0xE030 => 115,
         0xE145 => 119, // Pause
         0xE045 => 69,  // NumLock, as some keyboards report it
-        0x64..=0x6F => 183 + (code - 0x64), // F13..F24
+        0xE010 => 165, // previous track
+        0xE019 => 163, // next track
+        0xE022 => 164, // play/pause
+        0xE024 => 166, // stop
+        0x64..=0x6E => 183 + (code - 0x64), // F13..F23
+        0x76 => 194,                        // F24
         _ => return Key::UNKNOWN,
     };
     from_evdev(evdev)
@@ -252,6 +269,21 @@ mod tests {
             assert!(!from_evdev(c).is_unknown(), "evdev {c}");
             assert!(!from_windows_scancode(c).is_unknown(), "windows {c:#x}");
         }
+    }
+
+    #[test]
+    fn f13_to_f24_and_media_keys() {
+        assert_eq!(from_windows_scancode(0x64), Key::F13);
+        assert_eq!(from_windows_scancode(0x6E), Key::F23);
+        assert_eq!(from_windows_scancode(0x76), Key::F24);
+        assert_eq!(from_windows_scancode(0xE022), Key::MediaPlayPause);
+        assert_eq!(from_windows_scancode(0xE010), Key::MediaPrev);
+        assert_eq!(from_evdev(183), Key::F13);
+        assert_eq!(from_evdev(194), Key::F24);
+        assert_eq!(from_evdev(164), Key::MediaPlayPause);
+        assert_eq!(from_evdev(225), Key::BrightnessUp);
+        assert_eq!(from_evdev(224), Key::BrightnessDown);
+        assert_eq!(Key::BrightnessUp.name(), "BrightnessUp");
     }
 
     #[test]
