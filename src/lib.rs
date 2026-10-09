@@ -1,0 +1,151 @@
+//! Keyboard input that knows which physical keyboard it came from.
+//!
+//! ```no_run
+//! let listener = manykey::Listener::new().unwrap();
+//! for event in listener.iter() {
+//!     if let manykey::Event::Key(k) = event {
+//!         println!("keyboard {:?}: {} {:?}", k.keyboard, k.key, k.state);
+//!     }
+//! }
+//! ```
+//!
+//! Each OS gets a [`Backend`] that pushes [`Event`]s into a bounded queue
+//! ([`EventSink`]); [`Listener`] owns the backend and the consuming end.
+//! Keys are identified by physical position ([`Key`], a USB HID usage), and
+//! keyboards by [`KeyboardId`] plus descriptive [`KeyboardInfo`].
+
+mod backend;
+mod key;
+mod queue;
+
+pub mod capi;
+pub mod fake;
+
+pub use key::{from_evdev, from_windows_scancode, Key};
+pub use queue::EventSink;
+
+use std::io;
+use std::sync::Arc;
+use std::time::Duration;
+
+/// Default event queue capacity.
+pub const DEFAULT_CAPACITY: usize = 4096;
+
+/// Opaque keyboard identifier, stable for the lifetime of the process.
+///
+/// If the same device is unplugged and replugged it usually gets the same id
+/// back (matched by OS device identity), but ids are not persisted across runs.
+/// [`KeyboardInfo`] gives you what the OS reports so you can *attempt* to
+/// recognise a keyboard across runs; identical keyboards can report identical
+/// names and IDs, and `location` is not available everywhere.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct KeyboardId(pub u64);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyboardInfo {
+    pub id: KeyboardId,
+    /// Human-readable name where the OS provides one (Linux), otherwise the
+    /// device path (Windows).
+    pub name: String,
+    /// OS device path, e.g. `\\?\HID#VID_...` or `/dev/input/event3`.
+    pub path: String,
+    /// USB vendor/product IDs when known. Two identical keyboards share these;
+    /// tell them apart with `location`.
+    pub vendor_id: Option<u16>,
+    pub product_id: Option<u16>,
+    /// Where the device is attached, when the OS says (Linux `phys`).
+    pub location: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyState {
+    Pressed,
+    Released,
+    /// Auto-repeat. **Platform difference:** reported only on Linux. On Windows
+    /// a held key's repeats arrive as further `Pressed` events, so code that
+    /// must tell a fresh press from a repeat should track held keys itself.
+    Repeat,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyEvent {
+    pub keyboard: KeyboardId,
+    /// Physical key; `Key::UNKNOWN` if this backend has no mapping for it.
+    pub key: Key,
+    /// Platform-native scancode, kept so unmapped keys aren't lost.
+    /// Windows: set-1 make code with `0xE000` OR'd in for extended keys.
+    /// Linux: evdev `KEY_*` code.
+    pub native_code: u32,
+    pub state: KeyState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Event {
+    KeyboardAdded(KeyboardInfo),
+    KeyboardRemoved(KeyboardId),
+    Key(KeyEvent),
+    /// The queue overflowed and events were discarded before this point.
+    ///
+    /// **Consumers that track held keys must treat this as "my key state may
+    /// be wrong"**: clear it (a lost release would otherwise leave a key
+    /// stuck down). `dropped` is the cumulative discard count. Releases are
+    /// the last key events to be discarded, so this is rare in practice.
+    Overflow { dropped: u64 },
+}
+
+/// A platform input source. Dropping it stops event delivery.
+pub trait Backend: Send {}
+
+pub struct Listener {
+    pub(crate) shared: Arc<queue::Shared>,
+    pub(crate) _backend: Box<dyn Backend>,
+}
+
+impl Listener {
+    /// Start listening with the default backend for this OS.
+    pub fn new() -> io::Result<Self> {
+        Self::with_backend(DEFAULT_CAPACITY, backend::start_default)
+    }
+
+    /// Use a custom backend. `start` receives the sink the backend feeds.
+    pub fn with_backend(
+        capacity: usize,
+        start: impl FnOnce(EventSink) -> io::Result<Box<dyn Backend>>,
+    ) -> io::Result<Self> {
+        let shared = queue::Shared::new(capacity)?;
+        let backend = start(EventSink(shared.clone()))?;
+        Ok(Self::from_shared(shared, backend))
+    }
+
+    /// Next event if one is ready.
+    pub fn try_recv(&self) -> Option<Event> {
+        self.shared.try_pop()
+    }
+
+    /// Block until an event arrives.
+    pub fn recv(&self) -> Event {
+        self.shared.pop_timeout(None).expect("untimed wait returned no event")
+    }
+
+    pub fn recv_timeout(&self, timeout: Duration) -> Option<Event> {
+        self.shared.pop_timeout(Some(timeout))
+    }
+
+    /// Blocking iterator over events (never ends).
+    pub fn iter(&self) -> impl Iterator<Item = Event> + '_ {
+        std::iter::repeat_with(|| self.recv())
+    }
+
+    /// An OS handle that is readable/signalled whenever events are pending, for
+    /// integrating with a host event loop. Linux: an eventfd (use with
+    /// `poll`/`epoll`; don't read it yourself). Windows: an event `HANDLE` for
+    /// `WaitForMultipleObjects`. -1 on platforms without one.
+    pub fn wait_handle(&self) -> isize {
+        self.shared.raw_handle()
+    }
+
+    /// Key/other events discarded because the queue was full.
+    pub fn dropped_events(&self) -> u64 {
+        self.shared.dropped()
+    }
+}
