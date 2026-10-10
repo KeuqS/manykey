@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The library builds and its tests pass on every platform we mention.
+  # (macOS has no backend yet; this just keeps the crate compiling there.)
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Library, command line tool and doctests
+        run: cargo test -p manykey
+      - name: Viewer app (Windows only, where it has been run)
+        if: runner.os == 'Windows'
+        run: cargo test -p manykey-view
+
+  # The committed C header must match what cbindgen generates, and C code must compile against it.
+  header:
+    name: C header is up to date
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cbindgen@0.29.4
+      - name: Regenerate the header
+        run: cbindgen --config cbindgen.toml --crate manykey --output include/manykey.h
+      - name: Fail if it differs from the committed one
+        run: git diff --exit-code include/manykey.h
+      - name: C example compiles against the header
+        run: gcc -std=c11 -Wall -Wextra -Werror -fsyntax-only -Iinclude examples/watch.c
+
+  # Formatting and lints. Informational until a one-time cleanup lands
+  # (rustfmt currently wants changes, and clippy has a few warnings).
+  # When that's done, delete `continue-on-error`.
+  lint:
+    name: rustfmt and clippy (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy -p manykey --all-targets -- -D warnings
+
+  # EXPERIMENTAL: run the real binary on a Windows runner and check that
+  # injected key presses come out the other end of the Raw Input backend.
+  # GitHub's Windows runners may not give us an interactive desktop, so this
+  # may need adjusting or may turn out not to be possible.
+  windows-smoke:
+    name: windows backend smoke test (experimental)
+    runs-on: windows-latest
+    continue-on-error: true
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p manykey
+      - run: pwsh -NoProfile -File ci/windows-smoke.ps1
+
+  # EXPERIMENTAL: create virtual keyboards with uinput and drive the Linux
+  # (evdev) backend with them: key events, hot-plug, and unplug-while-held.
+  # This is the closest thing to hardware testing we can do in CI. It needs
+  # /dev/uinput and root on the runner, so it may need adjusting.
+  linux-uinput:
+    name: linux backend vs virtual keyboards (experimental)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p manykey
+      - run: sudo modprobe uinput || true
+      - run: ls -l /dev/uinput
+      - run: sudo python3 ci/linux-uinput-smoke.py target/debug/manykey

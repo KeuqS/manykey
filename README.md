@@ -1,5 +1,7 @@
 # manykey
 
+[![CI](https://github.com/libmanykey/manykey/actions/workflows/ci.yml/badge.svg)](https://github.com/libmanykey/manykey/actions/workflows/ci.yml)
+
 **Keyboard input that knows which keyboard it came from.**
 
 Operating systems merge every keyboard into one stream: press `W` on keyboard A or keyboard B and your program sees the same `W`. manykey gives you `(keyboard, key)` instead, so a local multiplayer game can give each player their own keyboard, a macro tool can give a spare keyboard its own meaning, and a stream overlay can show which keyboard is which.
@@ -28,8 +30,11 @@ With two keyboards attached, each keystroke carries its own `keyboard` number; t
 >
 > Throughout this document, **Tested** means it was run on real hardware (see the limits above), **Builds** means it compiles but hasn't been run, and **Planned** or **Idea** means it doesn't exist yet.
 
+**AI disclosure:** This library was developed with very significant help from several AI tools. I have reviewed all of the code myself, but I did not step through it in a debugger, and most of it has not been run on real hardware. I've done Win32 and low-level Linux device programming before and the relevant sections look sensible to me. I tested `manykey list`, `manykey watch` and `manykey-view` on Windows, found real problems, and had them fixed. Expect it to differ from hand-written code, and note that statements about how operating systems behave were written with AI assistance and are marked untested unless run on hardware. Treat it as an early prototype. How contributions are handled is described [below](#ai-use-in-development).
+
 ## Contents
 
+- [Why this exists](#why-this-exists)
 - [Quick start](#quick-start): Rust, C, command line
 - [Backends](#backends): one per way of reading keyboards, and what each costs you
 - [How it works](#how-it-works): keyboards, keys, events
@@ -39,7 +44,14 @@ With two keyboards attached, each keystroke carries its own `keyboard` number; t
 - [Limitations and FAQ](#limitations-and-faq)
 - [The viewer app](#the-viewer-app)
 - [Building and testing](#building-and-testing)
+- [Alternatives and prior art](#alternatives-and-prior-art)
 - [Roadmap](#roadmap)
+- [AI use in development](#ai-use-in-development)
+- [Contributing](#contributing)
+
+## Why this exists
+
+I originally wanted this years ago so I could turn an entire second keyboard into a macro keyboard for programming. At the time I settled for a LuaMacros plus AutoHotkey workaround, which worked but was a hacky mess. More recently I had ideas for couch co-op games, where several people share one PC with a keyboard each, and those would be much easier to build if a program could simply tell the keyboards apart. manykey is my attempt at a clean answer to both: small, embeddable in other programs, and honest about what it can and can't see.
 
 ## Quick start
 
@@ -332,11 +344,22 @@ examples/             C example
 apps/keyboard-view/   the viewer app (separate crate; not built by default)
 ```
 
+## Alternatives and prior art
+
+manykey isn't the first attempt at this problem. These are the related projects we know of; we haven't done a thorough survey, and corrections are welcome.
+
+- **ManyMouse** is a C library with the same goal for mice, and one we looked at while designing the API.
+- **Interception and AutoHotInterception (AHI)** use a kernel driver so AutoHotkey scripts can act on a specific keyboard. They can intercept input before applications see it, at the cost of installing a driver. manykey needs no driver, and in exchange can only observe.
+- **LuaMacros** is a Lua scripting tool for dedicating a keyboard to macros.
+- **SDL3** lets an application list keyboards and see which one produced an event, within SDL's windowing model. We haven't compared how it behaves for input outside your window. manykey is for programs that don't use SDL, or that need input outside a window.
+- **Raw Input (Windows), evdev and libinput (Linux)** are the operating-system interfaces manykey is built on or may be built on.
+
 ## Roadmap
 
 Roughly in order, and subject to change:
 
-- Run and fix the Linux (evdev) backend on real hardware; add a clear "permission denied" explanation and a `manykey doctor` command.
+- Continuous integration: build and test on Windows and Linux on every change, including driving the Linux backend with virtual keyboards. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+- Validate on real hardware: several USB keyboards, hot-plugging, identical keyboards, and the Linux backend. Then fix what that finds; add a clear "permission denied" explanation and a `manykey doctor` command.
 - Build the XInput2 backend for lower-privilege Linux use (the `backend` option already exists to select it).
 - A shared Windows backend so several `Listener`s in one process don't compete.
 - `keyboards()` for synchronous inventory, and `held_keys()` snapshots for recovering from overflow.
@@ -344,9 +367,15 @@ Roughly in order, and subject to change:
 - Bindings and packaging: Python, a Godot extension, .NET, Debian packages.
 - Publish to crates.io.
 
+## AI use in development
+
+How this project was built is described in the AI disclosure near the top. This section is about contributions.
+
+AI-assisted contributions are welcome, and the project itself is built that way. Unreviewed ones are not. "Slop" is what you get when nobody takes responsibility for reviewing what an AI wrote and for making sure it adds up to a coherent design, so every contribution must come from an accountable human who has personally reviewed every line and can answer questions about its design and how it was verified. Multi-keyboard input is fiddly platform plumbing that I never found rewarding enough to build by hand, and AI assistance is what made it worth attempting. Details are in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Contributing
 
-Issues and pull requests are welcome at <https://github.com/libmanykey/manykey>. If you report a bug, include your OS, what keyboards were attached, and the output of `manykey list` / `manykey watch`.
+Issues and pull requests are welcome at <https://github.com/libmanykey/manykey>. The most useful contribution right now is **testing on real hardware**; [CONTRIBUTING.md](CONTRIBUTING.md) lists what we most need checked and how to report it. If you report a bug, include your OS, what keyboards were attached, and the output of `manykey list` / `manykey watch`.
 
 ## License
 
