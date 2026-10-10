@@ -4,6 +4,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-10
+
 First public release: an early prototype. Only the Windows backend has been run on real keyboards; see the README's status section for exactly what has and hasn't been tested.
 
 ### Added

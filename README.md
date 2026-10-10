@@ -34,7 +34,7 @@ With two keyboards attached, each keystroke carries its own `keyboard` number; t
 
 **Where it's useful:** local multiplayer games where each player has their own keyboard; macro and control surfaces (a spare keyboard or keypad that means something different from your main one); installations and kiosks; input diagnostics; anything that cares which physical device produced an input.
 
-> **Early prototype.** Run on one Windows machine with a built-in keyboard, a USB keyboard and a ZSA Moonlander typing at the same time, and in CI on GitHub's Windows runner with injected key presses; the Linux backend has been run in CI against *virtual* keyboards but never on physical hardware; hot-plugging a keyboard on Windows has been tested with the Moonlander; two identical keyboards, and everything on Linux hardware, are untested. The API will change before 1.0, and nothing is published to crates.io or PyPI yet. Per-backend details are under [Backends](#backends).
+> **Early prototype.** Run on one Windows machine with a built-in keyboard, a USB keyboard and a ZSA Moonlander typing at the same time, and in CI on GitHub's Windows runner with injected key presses; the Linux backend has been run in CI against *virtual* keyboards but never on physical hardware; hot-plugging a keyboard on Windows has been tested with the Moonlander; two identical keyboards, and everything on Linux hardware, are untested. The API will change before 1.0. There are no Python or other-language packages yet. Per-backend details are under [Backends](#backends).
 >
 > Throughout this document, **Tested** means it was run on real hardware (see the limits above), **Tested (virtual)** means it was run in CI against virtual keyboards but not physical ones, **Builds** means it compiles but hasn't been run, and **Planned** or **Idea** means it doesn't exist yet.
 
@@ -66,9 +66,9 @@ I originally wanted this years ago so I could turn an entire second keyboard int
 ### Rust
 
 ```toml
-# Cargo.toml (not yet on crates.io; use a git dependency for now)
+# Cargo.toml
 [dependencies]
-manykey = { git = "https://github.com/libmanykey/manykey" }
+manykey = "0.1"
 ```
 
 ```rust,no_run
@@ -374,14 +374,12 @@ manykey isn't the first attempt at this problem. These are the related projects 
 
 Roughly in order, and subject to change:
 
-- Continuous integration: build and test on Windows and Linux on every change, including driving the Linux backend with virtual keyboards. See [`.github/workflows/ci.yml`](https://github.com/libmanykey/manykey/blob/HEAD/.github/workflows/ci.yml).
-- Validate on real hardware: identical keyboards, replugging a keyboard (does it get its id back?), more makes of USB keyboard, and the Linux backend. Then fix what that finds; add a clear "permission denied" explanation and a `manykey doctor` command.
+- Validate on real hardware: identical keyboards, replugging a keyboard (does it get its id back?), more makes of USB keyboard, and the Linux backend. Then fix what that finds, and add a `manykey doctor` command.
 - Build the XInput2 backend for lower-privilege Linux use (the `backend` option already exists to select it).
 - A shared Windows backend so several `Listener`s in one process don't compete.
 - `keyboards()` for synchronous inventory, and `held_keys()` snapshots for recovering from overflow.
 - Windows support for HID Consumer-page keys (brightness and friends).
 - Bindings and packaging: Python, a Godot extension, .NET, Debian packages.
-- Publish to crates.io.
 
 ## AI use in development
 
