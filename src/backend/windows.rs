@@ -353,7 +353,7 @@ fn hid_product_string(path: &str) -> Option<String> {
         let mut buf = [0u16; 128];
         let ok = HidD_GetProductString(h, buf.as_mut_ptr().cast(), (buf.len() * 2) as u32);
         CloseHandle(h);
-        if ok == 0 {
+        if !ok {
             return None;
         }
         let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
