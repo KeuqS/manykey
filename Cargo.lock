@@ -1020,7 +1020,7 @@ name = "manykey"
 version = "0.1.0"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1029,7 +1029,7 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "manykey",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
