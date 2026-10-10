@@ -1,0 +1,46 @@
+name: Bug report
+description: Something doesn't work the way the README says it should.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a suspected security problem, please don't use a public issue; see SECURITY.md.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: manykey version or commit
+      placeholder: "e.g. 0.1.0, or a commit hash"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows 11
+        - Windows 10
+        - Linux (X11)
+        - Linux (Wayland)
+        - Linux (console or other)
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: keyboards
+    attributes:
+      label: Keyboards involved
+      description: Make and model, and how they're connected.
+  - type: textarea
+    id: output
+    attributes:
+      label: Output of `manykey list` and `manykey watch`
+      render: text

@@ -25,6 +25,8 @@ impl Listener {
 }
 
 impl FakeKeyboards {
+    /// Connect a fake keyboard with this name; announces it with [`Event::KeyboardAdded`]
+    /// and returns the id its events will carry.
     pub fn add(&mut self, name: &str) -> KeyboardId {
         self.next_id += 1;
         let id = KeyboardId(self.next_id);
@@ -39,10 +41,12 @@ impl FakeKeyboards {
         id
     }
 
+    /// Disconnect a fake keyboard, announcing it with [`Event::KeyboardRemoved`].
     pub fn remove(&self, id: KeyboardId) {
         self.sink.send(Event::KeyboardRemoved(id));
     }
 
+    /// Send a key event as if the OS had reported it.
     pub fn key(&self, keyboard: KeyboardId, key: Key, state: KeyState) {
         self.key_with_origin(keyboard, key, state, EventOrigin::Native);
     }
@@ -57,10 +61,12 @@ impl FakeKeyboards {
         self.sink.send(Event::Key(KeyEvent { keyboard, key, native_code: key.0, state, origin }));
     }
 
+    /// Shorthand for a [`KeyState::Pressed`] [`key`](Self::key) event.
     pub fn press(&self, keyboard: KeyboardId, key: Key) {
         self.key(keyboard, key, KeyState::Pressed);
     }
 
+    /// Shorthand for a [`KeyState::Released`] [`key`](Self::key) event.
     pub fn release(&self, keyboard: KeyboardId, key: Key) {
         self.key(keyboard, key, KeyState::Released);
     }

@@ -25,7 +25,7 @@ When you report, include:
 
 Open an issue at <https://github.com/libmanykey/manykey/issues>. Please search first, and keep one problem per issue.
 
-manykey reads keyboard input, so it has security implications. If you think you've found a vulnerability, please report it privately using GitHub's "Report a vulnerability" option on the repository's Security tab rather than a public issue.
+manykey reads keyboard input, so it has security implications. If you think you've found a vulnerability, please report it privately using GitHub's "Report a vulnerability" option on the repository's Security tab rather than a public issue. See [SECURITY.md](SECURITY.md) for what counts.
 
 ## Development
 
@@ -50,6 +50,8 @@ Useful things to know:
 
 - Keep them small and focused. One change per pull request is easiest to review.
 - Add or update tests for behaviour you change.
+- Add a line under `## [Unreleased]` in `CHANGELOG.md` for anything a user would notice.
+- Document public items: the library enables `missing_docs`, and CI fails on undocumented public API.
 - **Keep the documentation honest.** The README labels things *Tested*, *Builds*, *Planned* and *Idea*. Don't move something to *Tested* unless you ran it on real hardware, and say what hardware in the pull request.
 - Don't add behaviour that polls the OS for key state, blocks or alters input, or sends data anywhere. The README lists what manykey does and doesn't do; changes to that list need a clear reason and a discussion first.
 - By contributing, you agree your contribution is licensed under the project's MIT license.
@@ -63,3 +65,15 @@ AI assistance is welcome here, and the project itself is developed with a lot of
 - If a change depends on behaviour you haven't observed (for example, how an operating system reports a device), say so in the pull request rather than asserting it.
 
 The aim is not to police tools but to keep the codebase something a person understands and stands behind.
+
+## Releases (maintainers)
+
+Releases are built by `.github/workflows/release.yml` when a `v*` tag is pushed. It creates a **draft** GitHub Release, so nothing becomes public until a person publishes it, and it never pushes to crates.io.
+
+1. In `CHANGELOG.md`, move the `Unreleased` entries under a new `## [x.y.z] - YYYY-MM-DD` heading, and set `version` in `Cargo.toml` to match, along with the `MANYKEY_VERSION_*` constants in `src/capi.rs` (a test checks they agree). Commit.
+2. **Rehearse:** push a tag like `vx.y.z-rc.1`. The workflow treats a suffixed tag as a pre-release of that version. Check the draft: the packages for each platform, `SHA256SUMS.txt`, and the release notes. Then throw it away with `gh release delete vx.y.z-rc.1 --cleanup-tag`.
+3. Push the real tag `vx.y.z`, review the draft, and publish it.
+4. Publish the crate yourself with `cargo publish`. That cannot be undone (a version can be yanked but never deleted), so run `cargo publish --dry-run` first and check the docs.rs build afterwards.
+
+All actions in the workflows are pinned to commit SHAs, and Dependabot proposes updates. Review those bumps as you would any dependency.
+

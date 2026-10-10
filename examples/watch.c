@@ -2,10 +2,21 @@
  *   Windows (MSVC): cl examples\watch.c /Iinclude target\release\manykey.dll.lib
  *   Linux:          cc examples/watch.c -Iinclude -Ltarget/release -lmanykey
  */
+#include <stdint.h>
 #include <stdio.h>
 #include "manykey.h"
 
 int main(void) {
+    /* Before 1.0 the header and the library must agree on major.minor. */
+    uint32_t lib = manykey_version();
+    if ((lib >> 8) != (MANYKEY_VERSION >> 8)) {
+        fprintf(stderr, "manykey: built against %u.%u.%u but loaded %u.%u.%u\n",
+                (unsigned)MANYKEY_VERSION_MAJOR, (unsigned)MANYKEY_VERSION_MINOR,
+                (unsigned)MANYKEY_VERSION_PATCH, (unsigned)(lib >> 16),
+                (unsigned)((lib >> 8) & 0xff), (unsigned)(lib & 0xff));
+        return 1;
+    }
+
     manykey_context *ctx;
     if (manykey_open(&ctx) != 0) {
         fprintf(stderr, "manykey: %s\n", manykey_last_error());

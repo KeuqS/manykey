@@ -1,0 +1,145 @@
+name: Release
+
+# Pushing a tag like v0.1.0 builds the release packages and creates a DRAFT
+# GitHub Release with checksums and build-provenance attestations. Nothing is
+# published until a person reviews the draft and publishes it, and nothing is
+# pushed to crates.io from here: `cargo publish` is a manual step.
+#
+# A tag with a suffix (v0.1.0-rc.1) is treated as a pre-release of version 0.1.0,
+# which is how to try this workflow out without releasing anything.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: verify the tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - id: v
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          crate=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$tag" = "$crate" ]; then
+            pre=false
+          elif [[ "$tag" == "$crate"-* ]]; then
+            pre=true
+          else
+            echo "::error::tag $GITHUB_REF_NAME does not match the version in Cargo.toml ($crate)"
+            exit 1
+          fi
+          echo "version=$crate" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$pre" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build (${{ matrix.name }})
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x86_64
+          - os: ubuntu-latest
+            name: linux-x86_64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Test
+        run: cargo test -p manykey --locked
+      - name: Build
+        run: cargo build --release -p manykey --locked
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dir = "manykey-${{ needs.verify.outputs.version }}-${{ matrix.name }}"
+          New-Item -ItemType Directory $dir | Out-Null
+          foreach ($f in "target\release\manykey.exe", "target\release\manykey.dll", "target\release\manykey.dll.lib",
+                         "target\release\manykey.lib", "include\manykey.h", "LICENSE", "README.md", "CHANGELOG.md") {
+            if (-not (Test-Path $f)) { throw "expected file is missing: $f" }
+            Copy-Item $f $dir
+          }
+          Compress-Archive -Path $dir -DestinationPath "$dir.zip"
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir="manykey-${{ needs.verify.outputs.version }}-${{ matrix.name }}"
+          mkdir "$dir"
+          for f in target/release/manykey target/release/libmanykey.so target/release/libmanykey.a \
+                   include/manykey.h LICENSE README.md CHANGELOG.md; do
+            [ -f "$f" ] || { echo "::error::expected file is missing: $f"; exit 1; }
+            cp "$f" "$dir/"
+          done
+          tar czf "$dir.tar.gz" "$dir"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dist-${{ matrix.name }}
+          path: |
+            manykey-*.zip
+            manykey-*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: draft release
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write      # create the draft release
+      id-token: write      # sign the provenance attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum manykey-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: "dist/manykey-*"
+      - name: Release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          # The section for this version, else the Unreleased section.
+          awk -v v="$VERSION" '$0 ~ "^## \\[" v "\\]" {p=1; next} p && /^## \[/ {exit} p {print}' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            awk '/^## \[Unreleased\]/ {p=1; next} p && /^## \[/ {exit} p {print}' CHANGELOG.md > notes.md
+          fi
+          [ -s notes.md ] || { echo "::error::no release notes found in CHANGELOG.md"; exit 1; }
+          cat notes.md
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          args=(--draft --verify-tag --title "manykey ${GITHUB_REF_NAME#v}" --notes-file notes.md)
+          if [ "$PRERELEASE" = "true" ]; then args+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" "${args[@]}" dist/*

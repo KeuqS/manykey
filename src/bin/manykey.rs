@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 fn usage() -> ! {
     eprintln!(
-        "usage: manykey <list|watch> [--include-injected] [--backend NAME]\n  list   show connected keyboards\n  watch  print keyboards and key events as they happen\n\n  --include-injected  also report software-injected input (Windows)\n  --backend NAME      auto (default), raw-input (Windows) or evdev (Linux)"
+        "usage: manykey <list|watch> [--include-injected] [--backend NAME]\n       manykey --version\n  list   show connected keyboards\n  watch  print keyboards and key events as they happen\n\n  --include-injected  also report software-injected input (Windows)\n  --backend NAME      auto (default), raw-input (Windows) or evdev (Linux)"
     );
     std::process::exit(2)
 }
@@ -17,6 +17,10 @@ fn id_str(vid: Option<u16>, pid: Option<u16>) -> String {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if matches!(args.first().map(String::as_str), Some("--version" | "-V")) {
+        println!("manykey {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     let cmd = args.first().cloned().unwrap_or_else(|| usage());
     let mut options = Options::default();
     let mut rest = args[1..].iter();

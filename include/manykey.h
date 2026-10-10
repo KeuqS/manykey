@@ -9,14 +9,49 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#define MANYKEY_API_VERSION 1
+/*
+ Major version of the library this header belongs to. These constants must
+ equal the crate version in `Cargo.toml` (a test checks that).
+ */
+#define MANYKEY_VERSION_MAJOR 0
 
+/*
+ Minor version of the library this header belongs to.
+ */
+#define MANYKEY_VERSION_MINOR 1
+
+/*
+ Patch version of the library this header belongs to.
+ */
+#define MANYKEY_VERSION_PATCH 0
+
+/*
+ The version above packed as `(major << 16) | (minor << 8) | patch`, to
+ compare against `manykey_version()`. Before 1.0 the header and the library
+ must agree on major.minor, i.e. `(manykey_version() >> 8) == (MANYKEY_VERSION >> 8)`:
+ any 0.x release may change the C ABI. From 1.0 on, the major must match and
+ the library's minor must be at least the header's.
+ */
+#define MANYKEY_VERSION (((MANYKEY_VERSION_MAJOR << 16) | (MANYKEY_VERSION_MINOR << 8)) | MANYKEY_VERSION_PATCH)
+
+/*
+ `manykey_event.type`: a keyboard is present (see `manykey_get_keyboard_info`).
+ */
 #define MANYKEY_EVENT_KEYBOARD_ADDED 1
 
+/*
+ `manykey_event.type`: a keyboard was unplugged.
+ */
 #define MANYKEY_EVENT_KEYBOARD_REMOVED 2
 
+/*
+ `manykey_event.type`: a key changed state.
+ */
 #define MANYKEY_EVENT_KEY 3
 
+/*
+ `manykey_event.type`: events were lost; see `manykey_event.dropped`.
+ */
 #define MANYKEY_EVENT_OVERFLOW 4
 
 /*
@@ -80,12 +115,25 @@
  */
 #define MANYKEY_ORIGIN_SYNTHESIZED 1
 
+/*
+ `manykey_event.state`: the key came up.
+ */
 #define MANYKEY_KEY_RELEASED 0
 
+/*
+ `manykey_event.state`: the key went down.
+ */
 #define MANYKEY_KEY_PRESSED 1
 
+/*
+ `manykey_event.state`: auto-repeat (reported only on Linux).
+ */
 #define MANYKEY_KEY_REPEAT 2
 
+/*
+ Opaque handle to a running listener. Create one with `manykey_open` or
+ `manykey_open_with`, and free it with `manykey_close`.
+ */
 typedef struct manykey_context manykey_context;
 
 /*
@@ -93,6 +141,9 @@ typedef struct manykey_context manykey_context;
  change what you need, and leave `size` as it set it.
  */
 typedef struct {
+  /*
+   Size of this struct, filled in by `manykey_options_default`.
+   */
   uint32_t size;
   /*
    Events the queue holds before discarding the oldest; 0 means the default.
@@ -118,11 +169,17 @@ typedef struct {
  future versions can add fields without breaking old callers.
  */
 typedef struct {
+  /*
+   Size of this struct; set it to `sizeof(manykey_event)` before use.
+   */
   uint32_t size;
   /*
    `MANYKEY_EVENT_*`
    */
   uint32_t type;
+  /*
+   The keyboard this event is about (not meaningful for `MANYKEY_EVENT_OVERFLOW`).
+   */
   uint64_t keyboard_id;
   /*
    USB HID usage of the physical key; 0 if unmapped. Keyboard-page keys are
@@ -157,9 +214,21 @@ typedef struct {
  unplugged). Copy them if you need them longer; never free them.
  */
 typedef struct {
+  /*
+   Size of this struct; set it to `sizeof(manykey_keyboard_info)` before use.
+   */
   uint32_t size;
+  /*
+   The keyboard's id, as in `manykey_event.keyboard_id`.
+   */
   uint64_t id;
+  /*
+   The keyboard's name, as a NUL-terminated string.
+   */
   const char *name;
+  /*
+   The OS device path, as a NUL-terminated string.
+   */
   const char *path;
   /*
    NULL if unknown.
@@ -182,9 +251,17 @@ extern "C" {
 #endif // __cplusplus
 
 /*
- API version this library was built with (`MANYKEY_API_VERSION`).
+ The version of the library that is actually loaded, packed like
+ `MANYKEY_VERSION`. Compare it with the header's `MANYKEY_VERSION` at
+ startup to catch a header and library that don't belong together.
  */
 uint32_t manykey_version(void);
+
+/*
+ The loaded library's version as a NUL-terminated string such as `"0.1.0"`,
+ for logs and bug reports. Static storage: never free it.
+ */
+const char *manykey_version_string(void);
 
 /*
  Last error message on this thread; never NULL. Valid until the next call.

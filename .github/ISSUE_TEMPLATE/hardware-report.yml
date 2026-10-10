@@ -1,0 +1,63 @@
+name: Hardware test report
+description: Tell us what happened when you ran manykey with your keyboards. "It worked" is a useful report too.
+title: "[hardware] "
+labels: ["hardware-report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing! Real-hardware reports are the most useful thing right now: the README marks a lot of behaviour as untested, and each report helps turn that into tested (or into a bug fix). See CONTRIBUTING.md for the checks we most need.
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows 11
+        - Windows 10
+        - Linux (X11)
+        - Linux (Wayland)
+        - Linux (console or other)
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version or Linux distribution
+      placeholder: "e.g. Windows 11 23H2, Ubuntu 24.04"
+  - type: textarea
+    id: keyboards
+    attributes:
+      label: Keyboards used
+      description: Make and model, whether each is USB, Bluetooth or built in, and anything unusual (split keyboard, KVM switch, wireless dongle, remote desktop, virtual machine).
+    validations:
+      required: true
+  - type: checkboxes
+    id: tried
+    attributes:
+      label: What did you try?
+      options:
+        - label: Two or more keyboards at the same time
+        - label: Plugged a keyboard in while manykey was running
+        - label: Unplugged a keyboard while manykey was running
+        - label: Unplugged a keyboard while holding a key
+        - label: Two identical keyboards
+        - label: Replugged a keyboard (did it keep its number?)
+        - label: Media, Fn or other special keys
+  - type: textarea
+    id: list-output
+    attributes:
+      label: Output of `manykey list`
+      render: text
+  - type: textarea
+    id: watch-output
+    attributes:
+      label: Relevant output of `manykey watch`
+      description: Just the interesting part, please.
+      render: text
+  - type: textarea
+    id: result
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true

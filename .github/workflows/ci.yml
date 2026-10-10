@@ -15,6 +15,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# Actions are pinned to full commit SHAs (the comment is the tag they correspond
+# to). Dependabot proposes updates; review them like any other dependency.
 jobs:
   # The library builds and its tests pass on every platform we mention.
   # (macOS has no backend yet; this just keeps the crate compiling there.)
@@ -27,9 +29,11 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Library, command line tool and doctests
         run: cargo test -p manykey
       - name: Viewer app (Windows only, where it has been run)
@@ -42,10 +46,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2
         with:
           tool: cbindgen@0.29.4
       - name: Regenerate the header
@@ -56,48 +62,49 @@ jobs:
         run: gcc -std=c11 -Wall -Wextra -Werror -fsyntax-only -Iinclude examples/watch.c
 
   # Formatting (see rustfmt.toml) and lints, with warnings treated as errors.
+  # The library denies missing docs, so undocumented public items fail here.
   lint:
     name: rustfmt and clippy
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
+          toolchain: stable
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy -p manykey --all-targets -- -D warnings
 
-  # EXPERIMENTAL: run the real binary on a Windows runner and check that
-  # injected key presses come out the other end of the Raw Input backend.
-  # GitHub's Windows runners may not give us an interactive desktop, so this
-  # may need adjusting or may turn out not to be possible.
+  # Runs the real Windows binary and checks that injected key presses come out
+  # of the Raw Input backend.
   windows-smoke:
-    name: windows backend smoke test (experimental)
+    name: windows backend smoke test
     runs-on: windows-latest
-    continue-on-error: true
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo build -p manykey
       - run: pwsh -NoProfile -File ci/windows-smoke.ps1
 
-  # EXPERIMENTAL: create virtual keyboards with uinput and drive the Linux
-  # (evdev) backend with them: key events, hot-plug, and unplug-while-held.
-  # This is the closest thing to hardware testing we can do in CI. It needs
-  # /dev/uinput and root on the runner, so it may need adjusting.
+  # Creates virtual keyboards with uinput and drives the Linux (evdev) backend
+  # with them: key events, hot-plug, unplug-while-held, and the permission error
+  # an unprivileged user gets. The closest thing to hardware testing we can do in CI.
   linux-uinput:
-    name: linux backend vs virtual keyboards (experimental)
+    name: linux backend vs virtual keyboards
     runs-on: ubuntu-latest
-    continue-on-error: true
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo build -p manykey
       - run: sudo modprobe uinput || true
       - run: ls -l /dev/uinput

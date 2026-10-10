@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![warn(missing_docs)]
 
 mod backend;
 mod key;
@@ -42,6 +43,7 @@ impl BackendKind {
         }
     }
 
+    /// The backend with this [`name`](Self::name), if there is one.
     pub fn from_name(name: &str) -> Option<BackendKind> {
         [BackendKind::Auto, BackendKind::RawInput, BackendKind::Evdev].into_iter().find(|k| k.name() == name)
     }
@@ -126,26 +128,32 @@ impl Default for Options {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct KeyboardId(pub u64);
 
+/// Descriptive information about a keyboard, delivered with [`Event::KeyboardAdded`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyboardInfo {
+    /// The id that events from this keyboard carry.
     pub id: KeyboardId,
-    /// Human-readable name where the OS provides one (Linux), otherwise the
-    /// device path (Windows).
+    /// Human-readable name where the backend has one. Windows: the HID product
+    /// string, else the Device Manager name. Linux: the kernel's device name.
     pub name: String,
     /// OS device path, e.g. `\\?\HID#VID_...` or `/dev/input/event3`.
     pub path: String,
-    /// USB vendor/product IDs when known. Two identical keyboards share these;
-    /// tell them apart with `location`.
+    /// USB vendor id, when known. Two identical keyboards share their vendor and
+    /// product ids; tell them apart with `location`.
     pub vendor_id: Option<u16>,
+    /// USB product id, when known (see `vendor_id`).
     pub product_id: Option<u16>,
     /// Where the device is attached, when the OS says (Linux `phys`).
     pub location: Option<String>,
 }
 
+/// What a key did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum KeyState {
+    /// The key went down.
     Pressed,
+    /// The key came back up.
     Released,
     /// Auto-repeat. **Platform difference:** reported only on Linux. On Windows
     /// a held key's repeats arrive as further `Pressed` events, so code that
@@ -168,8 +176,10 @@ pub enum EventOrigin {
     Synthesized,
 }
 
+/// One key press, release or repeat, tagged with the keyboard it came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KeyEvent {
+    /// The keyboard the key event came from.
     pub keyboard: KeyboardId,
     /// Physical key; `Key::UNKNOWN` if this backend has no mapping for it.
     pub key: Key,
@@ -177,16 +187,24 @@ pub struct KeyEvent {
     /// Windows: set-1 make code with `0xE000` OR'd in for extended keys.
     /// Linux: evdev `KEY_*` code.
     pub native_code: u32,
+    /// What the key did.
     pub state: KeyState,
     /// Whether the OS reported this or manykey generated it.
     pub origin: EventOrigin,
 }
 
+/// Something that happened on the keyboards being watched; read these from a
+/// [`Listener`]. This enum is `#[non_exhaustive]`: always include a `_` arm when
+/// you `match` on it, because new kinds of event may be added.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event {
+    /// A keyboard is present. Sent when it is first seen, including keyboards
+    /// that were already connected when the listener started.
     KeyboardAdded(KeyboardInfo),
+    /// A keyboard was unplugged.
     KeyboardRemoved(KeyboardId),
+    /// A key changed state on one of the keyboards.
     Key(KeyEvent),
     /// The queue overflowed and events were discarded before this point.
     ///
@@ -195,6 +213,7 @@ pub enum Event {
     /// stuck down). `dropped` is the cumulative discard count. Releases are
     /// the last key events to be discarded, so this is rare in practice.
     Overflow {
+        /// Total events discarded so far.
         dropped: u64,
     },
 }
@@ -202,6 +221,9 @@ pub enum Event {
 /// A platform input source. Dropping it stops event delivery.
 pub trait Backend: Send {}
 
+/// A running keyboard listener: it owns a backend and the queue that events
+/// are read from. Dropping it stops the backend. See the crate-level
+/// documentation for examples.
 pub struct Listener {
     pub(crate) shared: Arc<queue::Shared>,
     pub(crate) _backend: Box<dyn Backend>,
@@ -239,6 +261,7 @@ impl Listener {
         self.shared.pop_timeout(None).expect("untimed wait returned no event")
     }
 
+    /// Wait up to `timeout` for an event; `None` if none arrived in time.
     pub fn recv_timeout(&self, timeout: Duration) -> Option<Event> {
         self.shared.pop_timeout(Some(timeout))
     }

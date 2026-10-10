@@ -91,6 +91,9 @@ impl Shared {
 }
 
 impl EventSink {
+    /// Queue an event for the [`Listener`]. If the queue is full, the least
+    /// important queued event is discarded first (see the module documentation)
+    /// and an [`Event::Overflow`] is arranged.
     pub fn send(&self, event: Event) {
         let s = &self.0;
         let mut g = s.q.lock().unwrap();

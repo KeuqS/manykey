@@ -13,11 +13,27 @@ use std::collections::HashMap;
 use std::ffi::{c_char, c_int, CString};
 use std::time::Duration;
 
-pub const MANYKEY_API_VERSION: u32 = 1;
+/// Major version of the library this header belongs to. These constants must
+/// equal the crate version in `Cargo.toml` (a test checks that).
+pub const MANYKEY_VERSION_MAJOR: u32 = 0;
+/// Minor version of the library this header belongs to.
+pub const MANYKEY_VERSION_MINOR: u32 = 1;
+/// Patch version of the library this header belongs to.
+pub const MANYKEY_VERSION_PATCH: u32 = 0;
+/// The version above packed as `(major << 16) | (minor << 8) | patch`, to
+/// compare against `manykey_version()`. Before 1.0 the header and the library
+/// must agree on major.minor, i.e. `(manykey_version() >> 8) == (MANYKEY_VERSION >> 8)`:
+/// any 0.x release may change the C ABI. From 1.0 on, the major must match and
+/// the library's minor must be at least the header's.
+pub const MANYKEY_VERSION: u32 = (MANYKEY_VERSION_MAJOR << 16) | (MANYKEY_VERSION_MINOR << 8) | MANYKEY_VERSION_PATCH;
 
+/// `manykey_event.type`: a keyboard is present (see `manykey_get_keyboard_info`).
 pub const MANYKEY_EVENT_KEYBOARD_ADDED: u32 = 1;
+/// `manykey_event.type`: a keyboard was unplugged.
 pub const MANYKEY_EVENT_KEYBOARD_REMOVED: u32 = 2;
+/// `manykey_event.type`: a key changed state.
 pub const MANYKEY_EVENT_KEY: u32 = 3;
+/// `manykey_event.type`: events were lost; see `manykey_event.dropped`.
 pub const MANYKEY_EVENT_OVERFLOW: u32 = 4;
 
 /// `manykey_options.scope`: report every keystroke (the default).
@@ -53,8 +69,11 @@ pub const MANYKEY_ORIGIN_NATIVE: u32 = 0;
 /// release for a key still held when its keyboard was unplugged).
 pub const MANYKEY_ORIGIN_SYNTHESIZED: u32 = 1;
 
+/// `manykey_event.state`: the key came up.
 pub const MANYKEY_KEY_RELEASED: u32 = 0;
+/// `manykey_event.state`: the key went down.
 pub const MANYKEY_KEY_PRESSED: u32 = 1;
+/// `manykey_event.state`: auto-repeat (reported only on Linux).
 pub const MANYKEY_KEY_REPEAT: u32 = 2;
 
 struct KeyboardStrings {
@@ -65,6 +84,8 @@ struct KeyboardStrings {
     product_id: i32,
 }
 
+/// Opaque handle to a running listener. Create one with `manykey_open` or
+/// `manykey_open_with`, and free it with `manykey_close`.
 pub struct manykey_context {
     listener: Listener,
     keyboards: HashMap<u64, Box<KeyboardStrings>>,
@@ -74,9 +95,11 @@ pub struct manykey_context {
 /// future versions can add fields without breaking old callers.
 #[repr(C)]
 pub struct manykey_event {
+    /// Size of this struct; set it to `sizeof(manykey_event)` before use.
     pub size: u32,
     /// `MANYKEY_EVENT_*`
     pub r#type: u32,
+    /// The keyboard this event is about (not meaningful for `MANYKEY_EVENT_OVERFLOW`).
     pub keyboard_id: u64,
     /// USB HID usage of the physical key; 0 if unmapped. Keyboard-page keys are
     /// the bare usage; other pages (media, brightness) are `(page << 16) | usage`.
@@ -97,6 +120,7 @@ pub struct manykey_event {
 /// change what you need, and leave `size` as it set it.
 #[repr(C)]
 pub struct manykey_options {
+    /// Size of this struct, filled in by `manykey_options_default`.
     pub size: u32,
     /// Events the queue holds before discarding the oldest; 0 means the default.
     pub capacity: u32,
@@ -116,9 +140,13 @@ pub struct manykey_options {
 /// unplugged). Copy them if you need them longer; never free them.
 #[repr(C)]
 pub struct manykey_keyboard_info {
+    /// Size of this struct; set it to `sizeof(manykey_keyboard_info)` before use.
     pub size: u32,
+    /// The keyboard's id, as in `manykey_event.keyboard_id`.
     pub id: u64,
+    /// The keyboard's name, as a NUL-terminated string.
     pub name: *const c_char,
+    /// The OS device path, as a NUL-terminated string.
     pub path: *const c_char,
     /// NULL if unknown.
     pub location: *const c_char,
@@ -209,10 +237,19 @@ unsafe fn event_out<'a>(out: *mut manykey_event) -> Option<&'a mut manykey_event
     }
 }
 
-/// API version this library was built with (`MANYKEY_API_VERSION`).
+/// The version of the library that is actually loaded, packed like
+/// `MANYKEY_VERSION`. Compare it with the header's `MANYKEY_VERSION` at
+/// startup to catch a header and library that don't belong together.
 #[no_mangle]
 pub extern "C" fn manykey_version() -> u32 {
-    MANYKEY_API_VERSION
+    MANYKEY_VERSION
+}
+
+/// The loaded library's version as a NUL-terminated string such as `"0.1.0"`,
+/// for logs and bug reports. Static storage: never free it.
+#[no_mangle]
+pub extern "C" fn manykey_version_string() -> *const c_char {
+    concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr().cast()
 }
 
 /// Last error message on this thread; never NULL. Valid until the next call.
@@ -617,6 +654,60 @@ mod tests {
             assert_eq!(need, "LeftShift".len());
             assert_eq!(CStr::from_ptr(buf.as_ptr()).to_str().unwrap(), "Lef");
         }
+    }
+
+    #[test]
+    fn version_constants_match_the_crate_version() {
+        let part = |s: &str| s.parse::<u32>().unwrap();
+        assert_eq!(MANYKEY_VERSION_MAJOR, part(env!("CARGO_PKG_VERSION_MAJOR")), "update MANYKEY_VERSION_MAJOR");
+        assert_eq!(MANYKEY_VERSION_MINOR, part(env!("CARGO_PKG_VERSION_MINOR")), "update MANYKEY_VERSION_MINOR");
+        assert_eq!(MANYKEY_VERSION_PATCH, part(env!("CARGO_PKG_VERSION_PATCH")), "update MANYKEY_VERSION_PATCH");
+        assert_eq!(
+            manykey_version(),
+            (MANYKEY_VERSION_MAJOR << 16) | (MANYKEY_VERSION_MINOR << 8) | MANYKEY_VERSION_PATCH
+        );
+        // The compatibility check documented for C callers: major.minor.
+        assert_eq!(manykey_version() >> 8, (MANYKEY_VERSION_MAJOR << 8) | MANYKEY_VERSION_MINOR);
+        let s = unsafe { std::ffi::CStr::from_ptr(manykey_version_string()) };
+        assert_eq!(s.to_str().unwrap(), env!("CARGO_PKG_VERSION"));
+    }
+
+    /// The layout of the C structs is the ABI. If this test fails you changed it:
+    /// that needs a deliberate decision (and a version bump), not just a new number here.
+    #[test]
+    fn c_struct_layout_is_pinned() {
+        use std::mem::{offset_of, size_of};
+        assert_eq!(size_of::<manykey_event>(), 40);
+        assert_eq!(offset_of!(manykey_event, size), 0);
+        assert_eq!(offset_of!(manykey_event, r#type), 4);
+        assert_eq!(offset_of!(manykey_event, keyboard_id), 8);
+        assert_eq!(offset_of!(manykey_event, key), 16);
+        assert_eq!(offset_of!(manykey_event, native_code), 20);
+        assert_eq!(offset_of!(manykey_event, state), 24);
+        assert_eq!(offset_of!(manykey_event, origin), 28);
+        assert_eq!(offset_of!(manykey_event, dropped), 32);
+
+        assert_eq!(size_of::<manykey_options>(), 20);
+        assert_eq!(offset_of!(manykey_options, size), 0);
+        assert_eq!(offset_of!(manykey_options, capacity), 4);
+        assert_eq!(offset_of!(manykey_options, scope), 8);
+        assert_eq!(offset_of!(manykey_options, flags), 12);
+        assert_eq!(offset_of!(manykey_options, backend), 16);
+    }
+
+    /// Same, for the struct that holds pointers (so only on 64-bit targets).
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn c_keyboard_info_layout_is_pinned_on_64_bit() {
+        use std::mem::{offset_of, size_of};
+        assert_eq!(size_of::<manykey_keyboard_info>(), 48);
+        assert_eq!(offset_of!(manykey_keyboard_info, size), 0);
+        assert_eq!(offset_of!(manykey_keyboard_info, id), 8);
+        assert_eq!(offset_of!(manykey_keyboard_info, name), 16);
+        assert_eq!(offset_of!(manykey_keyboard_info, path), 24);
+        assert_eq!(offset_of!(manykey_keyboard_info, location), 32);
+        assert_eq!(offset_of!(manykey_keyboard_info, vendor_id), 40);
+        assert_eq!(offset_of!(manykey_keyboard_info, product_id), 44);
     }
 
     #[cfg(any(target_os = "linux", windows))]

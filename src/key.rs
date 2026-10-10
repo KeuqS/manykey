@@ -10,6 +10,8 @@
 
 use std::fmt;
 
+/// A physical key, identified by its USB HID usage. See the module documentation
+/// for how keys on other HID pages are encoded.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Key(pub u32);
 
@@ -17,7 +19,10 @@ macro_rules! keys {
     ($($name:ident = $code:literal),* $(,)?) => {
         #[allow(non_upper_case_globals)]
         impl Key {
-            $(pub const $name: Key = Key($code);)*
+            $(
+                #[doc = concat!("The `", stringify!($name), "` key (HID usage `", stringify!($code), "`).")]
+                pub const $name: Key = Key($code);
+            )*
         }
 
         fn known_name(code: u32) -> Option<&'static str> {
@@ -62,8 +67,11 @@ keys! {
 }
 
 impl Key {
+    /// "No key": the backend had no mapping for the key's scancode. The raw
+    /// scancode is still available as `KeyEvent::native_code`.
     pub const UNKNOWN: Key = Key(0);
 
+    /// Whether this is [`Key::UNKNOWN`].
     pub fn is_unknown(self) -> bool {
         self.0 == 0
     }

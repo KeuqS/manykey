@@ -131,11 +131,14 @@ int main(void) {
 }
 ```
 
+**Check the version.** Compare `manykey_version()` (the library you loaded) with the header's `MANYKEY_VERSION` at startup; before 1.0 they must agree on major and minor. [`examples/watch.c`](https://github.com/libmanykey/manykey/blob/HEAD/examples/watch.c) shows the check.
+
 To change settings, use `manykey_options_default` and `manykey_open_with`; see [Options](#options). A complete example is in [`examples/watch.c`](https://github.com/libmanykey/manykey/blob/HEAD/examples/watch.c). A context is not thread-safe: use it from one thread, or lock around it yourself.
 
 ### Command line
 
 ```text
+manykey --version                   print the version (please include it in bug reports)
 manykey list                        show connected keyboards
 manykey watch                       print keyboards and key events as they happen
 manykey watch --include-injected    ...and software-injected input (Windows)
@@ -388,7 +391,7 @@ AI-assisted contributions are welcome, and the project itself is built that way.
 
 ## Contributing
 
-Issues and pull requests are welcome at <https://github.com/libmanykey/manykey>. The most useful contribution right now is **testing on real hardware**; [CONTRIBUTING.md](https://github.com/libmanykey/manykey/blob/HEAD/CONTRIBUTING.md) lists what we most need checked and how to report it. If you report a bug, include your OS, what keyboards were attached, and the output of `manykey list` / `manykey watch`.
+Issues and pull requests are welcome at <https://github.com/libmanykey/manykey>. The most useful contribution right now is **testing on real hardware**; [CONTRIBUTING.md](https://github.com/libmanykey/manykey/blob/HEAD/CONTRIBUTING.md) lists what we most need checked and how to report it. If you report a bug, include your OS, what keyboards were attached, and the output of `manykey list` / `manykey watch`. For suspected security problems, please report privately; see [SECURITY.md](https://github.com/libmanykey/manykey/blob/HEAD/SECURITY.md).
 
 ## License
 
