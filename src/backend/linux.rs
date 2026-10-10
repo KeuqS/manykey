@@ -5,7 +5,7 @@
 //! the EV_REP capability bit, which separates real keyboards from power buttons
 //! and the like).
 
-use crate::{from_evdev, Backend, Event, EventSink, KeyEvent, KeyState, KeyboardId, KeyboardInfo};
+use crate::{from_evdev, Backend, Event, EventOrigin, EventSink, KeyEvent, KeyState, KeyboardId, KeyboardInfo, Options, Scope};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Read};
@@ -26,14 +26,23 @@ pub struct LinuxBackend {
 impl Backend for LinuxBackend {}
 
 impl LinuxBackend {
-    pub fn start(tx: EventSink) -> io::Result<Self> {
+    pub fn start(tx: EventSink, options: &Options) -> io::Result<Self> {
+        // evdev has no notion of window focus. Refuse rather than silently
+        // reporting everything to a caller that asked for less.
+        if options.scope != Scope::Global {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Scope::OwnProcessFocused is not supported on Linux (evdev cannot tell which window has focus)",
+            ));
+        }
+        let release_on_unplug = options.release_on_unplug;
         // Fail early if /proc is unusable rather than silently reporting nothing.
         list_keyboards()?;
         let stop = Arc::new(AtomicBool::new(false));
         let s = stop.clone();
         let thread = thread::Builder::new()
             .name("multikeyboard-scan".into())
-            .spawn(move || scan_loop(tx, s))?;
+            .spawn(move || scan_loop(tx, s, release_on_unplug))?;
         Ok(Self { stop, thread: Some(thread) })
     }
 }
@@ -89,7 +98,7 @@ fn list_keyboards() -> io::Result<Vec<Found>> {
     Ok(out)
 }
 
-fn scan_loop(tx: EventSink, stop: Arc<AtomicBool>) {
+fn scan_loop(tx: EventSink, stop: Arc<AtomicBool>, release_on_unplug: bool) {
     let active: Arc<Mutex<HashSet<String>>> = Arc::default();
     // Identity is name + USB ids + port, so replugging into the same port
     // yields the same KeyboardId even though the eventN number changes.
@@ -116,7 +125,7 @@ fn scan_loop(tx: EventSink, stop: Arc<AtomicBool>) {
             }));
             let (tx, stop, active, path) = (tx.clone(), stop.clone(), active.clone(), kb.path);
             readers.push(thread::spawn(move || {
-                read_device(file, id, &tx, &stop);
+                read_device(file, id, &tx, &stop, release_on_unplug);
                 active.lock().unwrap().remove(&path);
                 tx.send(Event::KeyboardRemoved(id));
             }));
@@ -128,9 +137,34 @@ fn scan_loop(tx: EventSink, stop: Arc<AtomicBool>) {
     }
 }
 
-fn read_device(mut file: File, id: KeyboardId, tx: &EventSink, stop: &AtomicBool) {
+/// Events that release every key in `held`, in a stable order.
+fn release_events(id: KeyboardId, held: &HashSet<u32>) -> Vec<KeyEvent> {
+    let mut codes: Vec<u32> = held.iter().copied().collect();
+    codes.sort_unstable();
+    codes
+        .into_iter()
+        .map(|code| KeyEvent {
+            keyboard: id,
+            key: from_evdev(code),
+            native_code: code,
+            state: KeyState::Released,
+            origin: EventOrigin::Synthesized,
+        })
+        .collect()
+}
+
+fn read_device(mut file: File, id: KeyboardId, tx: &EventSink, stop: &AtomicBool, release_on_unplug: bool) {
     const SZ: usize = std::mem::size_of::<libc::input_event>();
     let mut buf = [0u8; SZ];
+    let mut held: HashSet<u32> = HashSet::new();
+    // Called when the device goes away (not when we're shutting down).
+    let finish = |held: &HashSet<u32>| {
+        if release_on_unplug {
+            for ev in release_events(id, held) {
+                tx.send(Event::Key(ev));
+            }
+        }
+    };
     while !stop.load(Ordering::Relaxed) {
         // Poll with a timeout so we notice `stop` without needing a wakeup fd.
         let mut pfd = libc::pollfd { fd: file.as_raw_fd(), events: libc::POLLIN, revents: 0 };
@@ -139,26 +173,44 @@ fn read_device(mut file: File, id: KeyboardId, tx: &EventSink, stop: &AtomicBool
             continue;
         }
         if n < 0 || pfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
-            return;
+            return finish(&held);
         }
         if file.read_exact(&mut buf).is_err() {
-            return; // ENODEV on unplug
+            return finish(&held); // ENODEV on unplug
         }
         let ev: libc::input_event = unsafe { std::ptr::read_unaligned(buf.as_ptr().cast()) };
         if ev.type_ != EV_KEY {
             continue;
         }
+        let code = ev.code as u32;
         let state = match ev.value {
-            0 => KeyState::Released,
-            1 => KeyState::Pressed,
+            0 => {
+                held.remove(&code);
+                KeyState::Released
+            }
+            1 => {
+                held.insert(code);
+                KeyState::Pressed
+            }
             2 => KeyState::Repeat,
             _ => continue,
         };
-        tx.send(Event::Key(KeyEvent {
-            keyboard: id,
-            key: from_evdev(ev.code as u32),
-            native_code: ev.code as u32,
-            state,
-        }));
+        tx.send(Event::Key(KeyEvent { keyboard: id, key: from_evdev(code), native_code: code, state, origin: EventOrigin::Native }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn release_events_cover_every_held_key_in_order() {
+        let held: HashSet<u32> = [30, 42].into_iter().collect(); // A, LeftShift
+        let evs = release_events(KeyboardId(3), &held);
+        assert_eq!(evs.len(), 2);
+        assert!(evs.iter().all(|e| e.state == KeyState::Released && e.keyboard == KeyboardId(3)));
+        assert!(evs.iter().all(|e| e.origin == EventOrigin::Synthesized));
+        assert_eq!(evs[0].native_code, 30);
+        assert_eq!(evs[1].native_code, 42);
     }
 }

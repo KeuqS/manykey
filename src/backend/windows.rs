@@ -3,7 +3,7 @@
 //! `RIDEV_INPUTSINK` delivers input even when our process isn't focused, and
 //! `RIDEV_DEVNOTIFY` gives hot-plug notifications.
 
-use crate::{from_windows_scancode, Key, Backend, Event, EventSink, KeyEvent, KeyState, KeyboardId, KeyboardInfo};
+use crate::{from_windows_scancode, Backend, Event, EventOrigin, EventSink, Key, KeyEvent, KeyState, KeyboardId, KeyboardInfo, Options, Scope};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io;
@@ -13,6 +13,8 @@ use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use windows_sys::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows_sys::Win32::UI::Input::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -24,11 +26,11 @@ pub struct WindowsBackend {
 impl Backend for WindowsBackend {}
 
 impl WindowsBackend {
-    pub fn start(tx: EventSink) -> io::Result<Self> {
+    pub fn start(tx: EventSink, options: Options) -> io::Result<Self> {
         let (ready_tx, ready_rx) = mpsc::channel::<io::Result<isize>>();
         let thread = thread::Builder::new()
-            .name("multikeyboard-rawinput".into())
-            .spawn(move || run_message_loop(tx, ready_tx))?;
+            .name("manykey-rawinput".into())
+            .spawn(move || run_message_loop(tx, options, ready_tx))?;
         match ready_rx.recv() {
             Ok(Ok(hwnd)) => Ok(Self { hwnd, thread: Some(thread) }),
             Ok(Err(e)) => Err(e),
@@ -51,6 +53,13 @@ struct State {
     by_handle: HashMap<isize, KeyboardId>,
     by_path: HashMap<String, KeyboardId>,
     next_id: u64,
+    scope: Scope,
+    include_injected: bool,
+    release_on_unplug: bool,
+    release_on_focus_loss: bool,
+    /// For `Scope::OwnProcessFocused`: does a window of this process have the
+    /// foreground right now? Always true under `Scope::Global`.
+    focused: bool,
     /// Keys we've reported as pressed and not yet released, so that unplugging
     /// a keyboard mid-keypress can release them. (Pure bookkeeping of events
     /// we already saw: nothing here asks the OS about key state.)
@@ -70,9 +79,24 @@ impl State {
         }
     }
 
+    /// Foreground window changed. Losing focus releases whatever was held, so
+    /// the consumer isn't left with keys that went up while it wasn't looking.
+    fn set_focused(&mut self, focused: bool) {
+        if self.scope != Scope::OwnProcessFocused || focused == self.focused {
+            return;
+        }
+        if !focused && self.release_on_focus_loss {
+            let held: Vec<_> = self.held.iter().map(|(k, v)| (*k, *v)).collect();
+            for ((kb, native), key) in held {
+                self.release(kb, native, key);
+            }
+        }
+        self.focused = focused;
+    }
+
     fn release(&mut self, keyboard: KeyboardId, native_code: u32, key: Key) {
         self.held.remove(&(keyboard, native_code));
-        self.tx.send(Event::Key(KeyEvent { keyboard, key, native_code, state: KeyState::Released }));
+        self.tx.send(Event::Key(KeyEvent { keyboard, key, native_code, state: KeyState::Released, origin: EventOrigin::Synthesized }));
     }
 }
 
@@ -210,7 +234,7 @@ fn device_path(handle: HANDLE) -> Option<String> {
     }
 }
 
-fn run_message_loop(tx: EventSink, ready: mpsc::Sender<io::Result<isize>>) {
+fn run_message_loop(tx: EventSink, options: Options, ready: mpsc::Sender<io::Result<isize>>) {
     unsafe {
         let hinst = GetModuleHandleW(null());
         let class_name: Vec<u16> = "multikeyboard_rawinput\0".encode_utf16().collect();
@@ -236,12 +260,18 @@ fn run_message_loop(tx: EventSink, ready: mpsc::Sender<io::Result<isize>>) {
             return;
         }
 
+        let focused_now = options.scope == Scope::Global || foreground_is_ours(GetForegroundWindow());
         STATE.with(|s| {
             let mut st = State {
                 tx,
                 by_handle: HashMap::new(),
                 by_path: HashMap::new(),
                 next_id: 0,
+                scope: options.scope,
+                include_injected: options.include_injected,
+                release_on_unplug: options.release_on_unplug,
+                release_on_focus_loss: options.release_on_focus_loss,
+                focused: focused_now,
                 held: HashMap::new(),
             };
             // Announce keyboards that are already connected.
@@ -252,8 +282,24 @@ fn run_message_loop(tx: EventSink, ready: mpsc::Sender<io::Result<isize>>) {
         });
         // Raw input registration is per process per device class, so another
         // library in this process (e.g. winit) can silently take it over.
-        // Re-check periodically and take it back.
-        SetTimer(hwnd, REASSERT_TIMER, 500, None);
+        // Only if the caller opted in, re-check periodically and take it back.
+        if options.reclaim_registration {
+            SetTimer(hwnd, REASSERT_TIMER, 500, None);
+        }
+        // Focus changes arrive as events (no polling), and only when asked for.
+        let focus_hook = if options.scope == Scope::OwnProcessFocused {
+            Some(SetWinEventHook(
+                EVENT_SYSTEM_FOREGROUND,
+                EVENT_SYSTEM_FOREGROUND,
+                null_mut(),
+                Some(foreground_changed),
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT,
+            ))
+        } else {
+            None
+        };
         let _ = ready.send(Ok(hwnd as isize));
 
         let mut msg: MSG = zeroed();
@@ -261,8 +307,37 @@ fn run_message_loop(tx: EventSink, ready: mpsc::Sender<io::Result<isize>>) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+        if let Some(h) = focus_hook {
+            UnhookWinEvent(h);
+        }
         STATE.with(|s| *s.borrow_mut() = None);
     }
+}
+
+fn foreground_is_ours(hwnd: HWND) -> bool {
+    if hwnd.is_null() {
+        return false;
+    }
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+    pid == unsafe { GetCurrentProcessId() }
+}
+
+unsafe extern "system" fn foreground_changed(
+    _hook: HWINEVENTHOOK,
+    _event: u32,
+    hwnd: HWND,
+    _id_object: i32,
+    _id_child: i32,
+    _thread: u32,
+    _time: u32,
+) {
+    let ours = foreground_is_ours(hwnd);
+    STATE.with(|s| {
+        if let Some(st) = s.borrow_mut().as_mut() {
+            st.set_focused(ours);
+        }
+    });
 }
 
 const REASSERT_TIMER: usize = 1;
@@ -324,10 +399,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                         // By removal time the handle can't be queried, so
                         // only report devices we've already seen.
                         if let Some(id) = st.by_handle.remove(&(handle as isize)) {
-                            // Unplugged mid-keypress: release what it was holding.
+                            // Unplugged mid-keypress: release what it was holding
+                            // (if the caller wants that), and forget it either way.
                             let held: Vec<_> = st.held.iter().filter(|((kb, _), _)| *kb == id).map(|(k, v)| (*k, *v)).collect();
                             for ((kb, native), key) in held {
-                                st.release(kb, native, key);
+                                if st.release_on_unplug {
+                                    st.release(kb, native, key);
+                                } else {
+                                    st.held.remove(&(kb, native));
+                                }
                             }
                             st.tx.send(Event::KeyboardRemoved(id));
                         }
@@ -388,8 +468,11 @@ unsafe fn handle_raw_input(h: HRAWINPUT) {
     };
     STATE.with(|s| {
         if let Some(st) = s.borrow_mut().as_mut() {
+            if !st.focused || (raw.header.hDevice.is_null() && !st.include_injected) {
+                return;
+            }
             let keyboard = st.id_for(raw.header.hDevice);
-            let ev = KeyEvent { keyboard, key: from_windows_scancode(code), native_code: code, state };
+            let ev = KeyEvent { keyboard, key: from_windows_scancode(code), native_code: code, state, origin: EventOrigin::Native };
             st.track(&ev);
             st.tx.send(Event::Key(ev));
         }

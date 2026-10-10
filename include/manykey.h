@@ -19,6 +19,67 @@
 
 #define MANYKEY_EVENT_OVERFLOW 4
 
+/*
+ `manykey_options.scope`: report every keystroke (the default).
+ */
+#define MANYKEY_SCOPE_GLOBAL 0
+
+/*
+ `manykey_options.scope`: only while a window of this process has focus.
+ Windows only; `manykey_open_with` fails elsewhere.
+ */
+#define MANYKEY_SCOPE_OWN_PROCESS_FOCUSED 1
+
+/*
+ `manykey_options.flags`: Windows: re-take raw keyboard registration if
+ another component of this process takes it over. Off by default.
+ */
+#define MANYKEY_OPTION_RECLAIM_REGISTRATION (1 << 0)
+
+/*
+ `manykey_options.flags`: Windows: also report software-injected input as an
+ extra pseudo-keyboard. Off by default.
+ */
+#define MANYKEY_OPTION_INCLUDE_INJECTED (1 << 1)
+
+/*
+ `manykey_options.backend`: the best backend for this platform (the default).
+ */
+#define MANYKEY_BACKEND_AUTO 0
+
+/*
+ `manykey_options.backend`: Windows Raw Input.
+ */
+#define MANYKEY_BACKEND_RAW_INPUT 1
+
+/*
+ `manykey_options.backend`: Linux evdev.
+ */
+#define MANYKEY_BACKEND_EVDEV 2
+
+/*
+ `manykey_options.flags`: when a keyboard is unplugged while holding keys,
+ emit a release for each before `KEYBOARD_REMOVED`. On by default.
+ */
+#define MANYKEY_OPTION_RELEASE_ON_UNPLUG (1 << 2)
+
+/*
+ `manykey_options.flags`: with `MANYKEY_SCOPE_OWN_PROCESS_FOCUSED`, emit a
+ release for every held key when focus is lost. On by default.
+ */
+#define MANYKEY_OPTION_RELEASE_ON_FOCUS_LOSS (1 << 3)
+
+/*
+ `manykey_event.origin`: the OS reported this key event.
+ */
+#define MANYKEY_ORIGIN_NATIVE 0
+
+/*
+ `manykey_event.origin`: manykey generated this key event (for example a
+ release for a key still held when its keyboard was unplugged).
+ */
+#define MANYKEY_ORIGIN_SYNTHESIZED 1
+
 #define MANYKEY_KEY_RELEASED 0
 
 #define MANYKEY_KEY_PRESSED 1
@@ -26,6 +87,31 @@
 #define MANYKEY_KEY_REPEAT 2
 
 typedef struct manykey_context manykey_context;
+
+/*
+ Settings for `manykey_open_with`. Start from `manykey_options_default`,
+ change what you need, and leave `size` as it set it.
+ */
+typedef struct {
+  uint32_t size;
+  /*
+   Events the queue holds before discarding the oldest; 0 means the default.
+   */
+  uint32_t capacity;
+  /*
+   `MANYKEY_SCOPE_*`
+   */
+  uint32_t scope;
+  /*
+   Bitwise OR of `MANYKEY_OPTION_*`. Note that two of them are *on* in
+   `manykey_options_default`; a zeroed struct turns them off.
+   */
+  uint32_t flags;
+  /*
+   `MANYKEY_BACKEND_*`
+   */
+  uint32_t backend;
+} manykey_options;
 
 /*
  One event. Set `size` to `sizeof(manykey_event)` before passing it in so
@@ -52,7 +138,10 @@ typedef struct {
    `MANYKEY_KEY_*`. Valid for `MANYKEY_EVENT_KEY`.
    */
   uint32_t state;
-  uint32_t reserved;
+  /*
+   `MANYKEY_ORIGIN_*`. Valid for `MANYKEY_EVENT_KEY`.
+   */
+  uint32_t origin;
   /*
    Cumulative discard count. Valid for `MANYKEY_EVENT_OVERFLOW`, which
    means events were lost: **clear any held-key state you track**.
@@ -103,9 +192,21 @@ uint32_t manykey_version(void);
 const char *manykey_last_error(void);
 
 /*
- Start listening. Returns 0 and sets `*out` on success, -1 on error.
+ Fill `*out` with the default options (what `manykey_open` uses).
+ */
+void manykey_options_default(manykey_options *out);
+
+/*
+ Start listening with default options. Returns 0 and sets `*out` on
+ success, -1 on error.
  */
 int manykey_open(manykey_context **out);
+
+/*
+ Start listening with the given options. Returns 0 and sets `*out` on
+ success, -1 on error (see `manykey_last_error`).
+ */
+int manykey_open_with(const manykey_options *options, manykey_context **out);
 
 /*
  Stop listening and free the context. NULL is allowed.

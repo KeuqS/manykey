@@ -1,14 +1,353 @@
 # manykey
 
-Keyboard input that knows *which* keyboard it came from: instead of a keycode you get `(keyboard, key)`.
+**Keyboard input that knows which keyboard it came from.**
 
-- Physical keys are USB HID usages (`Key::A`, `Key::LeftShift`, ...), identical on every OS.
-- Keyboards have a process-stable `KeyboardId` plus info (name, vendor/product id, location) to recognise them across runs.
-- Backends: Windows (Raw Input, no driver needed, works unfocused), Linux (evdev; needs read access to `/dev/input`).
-- Rust API (`Listener`), C API (`include/manykey.h`), and a CLI: `manykey list`, `manykey watch`.
-- `Listener::fake()` gives a hardware-free backend for tests.
+Operating systems merge every keyboard into one stream: press `W` on keyboard A or keyboard B and your program sees the same `W`. manykey gives you `(keyboard, key)` instead, so a local multiplayer game can give each player their own keyboard, a macro tool can give a spare keyboard its own meaning, and a stream overlay can show which keyboard is which.
 
-Regenerate the header after changing `src/capi.rs`:
-`cbindgen --config cbindgen.toml --crate manykey --output include/manykey.h`
+It is a small library, not a framework. It reports *which physical key on which physical keyboard*, and nothing else: no text input, no layouts, no action mapping, no windowing. Use your game engine or toolkit for all of that.
 
-MIT licensed.
+```text
+$ manykey watch
++ keyboard 1 ----:---- Standard PS/2 Keyboard
+keyboard 1  LeftShift    down   (native 0x002a)
+keyboard 1  H            down   (native 0x0023)
+keyboard 1  H            up     (native 0x0023)
+keyboard 1  LeftShift    up     (native 0x002a)
+keyboard 1  E            down   (native 0x0012)
+keyboard 1  E            up     (native 0x0012)
+keyboard 1  L            down   (native 0x0026)
+keyboard 1  L            up     (native 0x0026)
+...
+```
+
+With two keyboards attached, each keystroke carries its own `keyboard` number; that number is the whole point of the library.
+
+**Where it's useful:** local multiplayer games where each player has their own keyboard; macro and control surfaces (a spare keyboard or keypad that means something different from your main one); installations and kiosks; input diagnostics; anything that cares which physical device produced an input.
+
+> **Early prototype.** Run on one Windows machine with a single built-in keyboard; Linux builds but has never been run; hot-plugging, USB keyboards and multi-keyboard behaviour are untested everywhere. The API will change before 1.0, and nothing is published to crates.io or PyPI yet. Per-backend details are under [Backends](#backends).
+>
+> Throughout this document, **Tested** means it was run on real hardware (see the limits above), **Builds** means it compiles but hasn't been run, and **Planned** or **Idea** means it doesn't exist yet.
+
+## Contents
+
+- [Quick start](#quick-start): Rust, C, command line
+- [Backends](#backends): one per way of reading keyboards, and what each costs you
+- [How it works](#how-it-works): keyboards, keys, events
+- [Options](#options)
+- [What manykey does to your program](#what-manykey-does-to-your-program) (please read)
+- [Linux permissions](#linux-permissions)
+- [Limitations and FAQ](#limitations-and-faq)
+- [The viewer app](#the-viewer-app)
+- [Building and testing](#building-and-testing)
+- [Roadmap](#roadmap)
+
+## Quick start
+
+### Rust
+
+```toml
+# Cargo.toml (not yet on crates.io; use a git dependency for now)
+[dependencies]
+manykey = { git = "https://github.com/libmanykey/manykey" }
+```
+
+```rust,no_run
+use manykey::{Event, KeyState, Listener};
+
+fn main() -> std::io::Result<()> {
+    let listener = Listener::new()?;
+    for event in listener.iter() {
+        match event {
+            Event::KeyboardAdded(k) => println!("+ {} (id {})", k.name, k.id.0),
+            Event::KeyboardRemoved(id) => println!("- keyboard {}", id.0),
+            Event::Key(k) if k.state == KeyState::Pressed => {
+                println!("keyboard {} pressed {}", k.keyboard.0, k.key);
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+```
+
+Waiting forever isn't always what you want. Inside a game loop, drain what's ready:
+
+```rust,no_run
+# let listener = manykey::Listener::new().unwrap();
+while let Some(event) = listener.try_recv() {
+    // handle event
+    # let _ = event;
+}
+```
+
+Or block with a timeout (`recv_timeout`), or hand `listener.wait_handle()` to your own event loop: it's an OS handle (a file descriptor on Linux, an event `HANDLE` on Windows) that is signalled while events are waiting.
+
+`Listener::new()` picks the backend for your operating system automatically. See [Backends](#backends).
+
+### C
+
+`include/manykey.h` is generated from the Rust source. Build the library with `cargo build --release` and link `manykey` (a `.dll`/`.so`/static library, all produced).
+
+```c
+#include <stdio.h>
+#include "manykey.h"
+
+int main(void) {
+    manykey_context *ctx;
+    if (manykey_open(&ctx) != 0) {
+        fprintf(stderr, "manykey: %s\n", manykey_last_error());
+        return 1;
+    }
+    manykey_event ev = { .size = sizeof ev };   /* always set size */
+    while (manykey_wait(ctx, &ev, -1) == 1) {
+        if (ev.type == MANYKEY_EVENT_KEY && ev.state == MANYKEY_KEY_PRESSED) {
+            char name[32];
+            manykey_key_name(ev.key, name, sizeof name);
+            printf("keyboard %llu pressed %s\n", (unsigned long long)ev.keyboard_id, name);
+        }
+    }
+    manykey_close(ctx);
+    return 0;
+}
+```
+
+To change settings, use `manykey_options_default` and `manykey_open_with`; see [Options](#options). A complete example is in [`examples/watch.c`](examples/watch.c). A context is not thread-safe: use it from one thread, or lock around it yourself.
+
+### Command line
+
+```text
+manykey list                        show connected keyboards
+manykey watch                       print keyboards and key events as they happen
+manykey watch --include-injected    ...and software-injected input (Windows)
+manykey watch --backend NAME        auto (default), raw-input (Windows) or evdev (Linux)
+```
+
+## Backends
+
+manykey is organized around **backends**. A backend is the piece that talks to one operating-system mechanism for reading keyboards. Everything above it (the key model, the events, the options, the Rust and C APIs) is the same whichever backend is underneath. What differs is what each backend can see, what it needs from the system, and what it costs you.
+
+`Listener::new()` picks the best backend for your operating system. You can name one explicitly with the `backend` [option](#options) (`manykey watch --backend evdev` on the command line); asking for a backend that isn't available on the current platform is an error, not a silent fallback. Today each OS has exactly one real backend, so this matters more once there are several on one OS (there are at least three plausible ones on Linux; the sections below say why you'd want to choose).
+
+| Backend | Platform | Status | Needs | Sees unfocused input | `OwnProcessFocused` scope | Device name / USB ids / port |
+|---|---|---|---|---|---|---|
+| [Raw Input](#windows-raw-input) | Windows | **Tested** (one built-in keyboard) | nothing | yes | yes | name, USB ids / no port |
+| [evdev](#linux-evdev) | Linux | Builds | read access to `/dev/input` | yes | no (returns an error) | name, USB ids, port |
+| [XInput2](#linux-other-backends) | Linux, X11 only | Planned | an X11 session | expected yes | not yet decided | expected |
+| [libinput](#linux-other-backends) | Linux | Idea | same device access as evdev | yes | no | expected |
+| [IOHIDManager](#macos) | macOS | Not started | Input Monitoring permission | | | |
+| [Fake](#fake-backend-for-tests) | any | **Tested** | nothing | n/a | n/a | scripted |
+
+### Windows: Raw Input
+
+*Status: tested, with limits.* Run on one machine with one built-in keyboard and software-injected input. Hot-plugging and USB keyboards are untested. The Windows backend uses the Raw Input API. It creates a hidden message-only window on its own thread and registers for keyboard input with `RIDEV_INPUTSINK`, so it receives every keyboard's keys even while your window isn't focused.
+
+- **Needs:** nothing. No driver, no administrator rights, no hooks.
+- **Keyboards already connected** are announced at startup. A keyboard plugged in *later* is meant to be announced on its first keypress, not at the moment of plugging in, and unplugging is meant to be noticed through the OS's device-change notification for keyboards that have been seen. **We haven't tried either with a real keyboard yet.**
+- **Names and ids.** The name comes from the HID product string, which the backend reads by briefly opening the device handle with zero access rights; if that fails, it falls back to the Device Manager name from the registry. The registry fallback is what our test machine's built-in keyboard uses; the HID product-string path (what USB keyboards should use) is untested. USB vendor and product ids come from the device path, so built-in keyboards (which often have none) show `----:----`. The port isn't reported.
+- **Key repeat** arrives as repeated `Pressed` events. There is no separate `Repeat`.
+- **Registration is per process.** Windows lets a process register for raw keyboard input once, and a later registration replaces an earlier one. If another component in your process (winit, SDL, an engine) also registers for raw keyboard input, one of you silently stops receiving. See `reclaim_registration` under [Options](#options).
+- **Focused scope** (`OwnProcessFocused`) is implemented with a foreground-window change notification, and drops events while none of your windows is in front.
+- **Software-injected input** (anything sent with `SendInput`, such as macro tools) arrives with no device. It is dropped by default, and with `include_injected` it shows up as one extra pseudo-keyboard.
+
+### Linux: evdev
+
+*Status: builds, not yet run on real hardware.* The evdev backend reads the kernel's `/dev/input/event*` devices directly, on one thread per keyboard, and rescans `/proc/bus/input/devices` twice a second to notice keyboards being plugged and unplugged.
+
+- **Needs read access to the input devices**, normally membership of the `input` group. See [Linux permissions](#linux-permissions); this is a real cost.
+- **Works under X11, Wayland and the text console**, because it doesn't talk to the display server at all. That also means it has **no idea which window has focus**, so `OwnProcessFocused` returns an error instead of silently reporting everything.
+- **What it reports:** the kernel's device name, USB ids, and the physical port. A replugged keyboard in the same port is meant to get the same `KeyboardId` back.
+- **Key repeat** is reported as `Repeat`.
+- **Which devices count as keyboards** is decided by a heuristic (the kernel marks it as a keyboard and it supports key repeat). Virtual keyboards created by other software, such as remappers, can show up as keyboards too.
+
+### Linux: other backends
+
+These don't exist yet. They're listed because the reason for having several backends is that no single Linux mechanism is best on every axis:
+
+- **XInput2 (X11).** *Planned.* Talking to the X server should need no special file permissions, which is the main appeal. It would only work in real X11 sessions; programs running through XWayland probably can't see input meant for native Wayland windows. We haven't built or verified this.
+- **libinput.** *Idea.* A better parser for the same devices evdev reads, with hotplug handled for you. It does not remove the permission requirement, because libinput opens the same device files.
+- **Wayland.** As far as we know, Wayland's core protocol merges all keyboards into one, so applications cannot tell which physical keyboard a key came from, and there's no sanctioned global alternative. If that's right, a Wayland user needs evdev (or libinput) and its permissions. We haven't verified this across compositors, so treat it as our current understanding, not a guarantee.
+
+### macOS
+
+*Not started.* The likely route is IOHIDManager, which also needs the user to grant Input Monitoring permission.
+
+### Fake backend (for tests)
+
+*Tested.* `Listener::fake(capacity)` returns a listener plus a handle for adding keyboards and injecting key events, with no hardware. manykey's own tests use it, and you can use it to test code that consumes manykey.
+
+### WSL2
+
+WSL2 can't see the host machine's keyboards, so none of the real backends work inside it. Run the Windows build instead.
+
+## How it works
+
+### Keyboards
+
+Each keyboard gets a `KeyboardId`: a number that identifies it for as long as it stays connected. It is **not** persisted across runs. Whether the *same* physical keyboard gets the *same* id back after being unplugged and replugged depends on the backend and on how much identity it can see, and we haven't tested it, so don't rely on that yet. `Event::KeyboardAdded` carries a `KeyboardInfo` with what the backend knows about the device:
+
+| Field | Meaning |
+|---|---|
+| `name` | Product name where the backend has one. |
+| `vendor_id`, `product_id` | USB ids when known. Built-in keyboards often have none. |
+| `location` | Where it's attached, when the backend reports it (evdev: the physical port). |
+| `path` | The OS device path. |
+
+If you want to remember "this is player 2's keyboard" across runs, you can try matching on these. It's a heuristic: two identical keyboards share name and ids, and moving one to another port can change its path or location. Don't treat it as a guaranteed physical-device identity.
+
+### Keys
+
+A `Key` is a **physical key**, named by its USB HID usage, so it means the same thing on every backend and every layout. `Key::A` is the key that's labelled `A` on a US keyboard, wherever it sits on a French one. Media and brightness keys (HID Consumer page) are encoded as `(page << 16) | usage`. A key manykey doesn't know is `Key::UNKNOWN`; every event also carries the raw `native_code` so nothing is lost.
+
+manykey reports positions, not characters. Turning a key into text depends on the layout, dead keys and input methods, which is the OS's job. Use your toolkit's text input for typing, and manykey for *who pressed what*.
+
+### Events
+
+| Event | Meaning |
+|---|---|
+| `KeyboardAdded(info)` | A keyboard is present (see the backend notes for when). |
+| `KeyboardRemoved(id)` | It was unplugged. |
+| `Key(KeyEvent)` | `keyboard`, `key`, `native_code`, `state` (`Pressed`, `Released` or `Repeat`), and `origin` (`Native` or `Synthesized`; see below). |
+| `Overflow { dropped }` | Your program fell behind and events were lost. **Treat held-key state as invalid and rebuild it.** |
+
+**Some events are generated by manykey, not by the keyboard.** Nearly everything you receive is what the OS reported. The exceptions:
+
+- If a keyboard is **unplugged while holding keys**, manykey emits a `Released` for each held key just before `KeyboardRemoved`. Switch: `release_on_unplug`. (Written for both backends; not yet tested with a real unplug.)
+- Under `OwnProcessFocused`, when your process **loses focus**, manykey emits a `Released` for every held key, then goes quiet until focus returns. Keys still physically held when focus returns are *not* re-announced; they look "up" until their next press. Switch: `release_on_focus_loss`. (Raw Input only, since that's the only backend with focused scope.)
+- `Overflow` is also manykey's own marker. It's a notification, not a key event, and has no switch.
+
+**Both release behaviours are on by default and can be turned off**, because only your application knows whether it wants them: they keep a held-key table correct for apps that keep one, and they are unwanted noise for apps that record exactly what the OS sent. If you switch them off, the corresponding releases are simply never produced.
+
+Every `KeyEvent` carries an **`origin`**: `Native` if the OS reported it, `Synthesized` if manykey generated it. Use it to tell them apart: for diagnostics, for recording what the OS actually did, or to ignore the synthesized releases when you'd rather not have them (or switch them off entirely with the options below). In C it's `manykey_event.origin` (`MANYKEY_ORIGIN_NATIVE` / `MANYKEY_ORIGIN_SYNTHESIZED`), and `manykey watch` marks synthesized events with `[synthesized]`. Synthesized events never leave your `Listener`: they're added to *your* event stream only, and nothing is sent to the OS or to other programs.
+
+**Overflow.** Events wait in a bounded queue (4096 by default). If you stop draining it, the oldest events are discarded: repeats first, then presses, then releases, and device add/remove last. An `Overflow` event is delivered ahead of whatever survived, so you always find out. A dropped *release* would otherwise leave a key stuck down in your state.
+
+## Options
+
+`Listener::new()` uses the defaults. For anything else:
+
+```rust,no_run
+use manykey::{Listener, Options, Scope};
+
+let listener = Listener::with_options(Options {
+    scope: Scope::OwnProcessFocused,
+    ..Options::default()
+})?;
+# Ok::<(), std::io::Error>(())
+```
+
+| Option | Default | Backends | What it does |
+|---|---|---|---|
+| `backend` | `Auto` | all | Which backend reads the keyboards: `Auto`, `RawInput` (Windows) or `Evdev` (Linux). Naming one that isn't available on this platform returns an error. |
+| `scope` | `Global` | `OwnProcessFocused`: Raw Input only | `Global` reports every keystroke on every keyboard, whoever has focus (what a background tool needs). `OwnProcessFocused` reports only while a window of **your** process is the foreground window, and releases any held keys when focus is lost. See the note below. |
+| `reclaim_registration` | `false` | Raw Input | If another part of your process (a windowing library, an engine) takes over raw keyboard input registration, take it back. Checked twice a second. Off by default because it overrides the host. Turn it on if you get **no events inside a program that has its own window**. |
+| `include_injected` | `false` | Raw Input | Also report input injected by software (`SendInput`, AutoHotkey and similar), which has no physical device and appears as one extra pseudo-keyboard named "Injected input (no physical device)". We haven't tested what other software, such as remote-desktop or accessibility tools, does here. |
+| `release_on_unplug` | `true` | all | Emit a `Released` for each held key when a keyboard is unplugged, before `KeyboardRemoved`. See [Events](#events). |
+| `release_on_focus_loss` | `true` | Raw Input | With `OwnProcessFocused`: emit a `Released` for each held key when your process loses focus. If off, those keys never get a release from manykey. |
+| `capacity` | `4096` | all | How many events the queue holds before discarding (see [Events](#events)). |
+
+Options that don't apply to the backend in use are ignored, except `backend` and `scope`, which return an error if they can't be honoured, so that you never silently get something other than what you asked for.
+
+In C: `manykey_options_default(&opts)`, set `opts.backend`, `opts.scope`, `opts.capacity` and `opts.flags` (`MANYKEY_OPTION_RECLAIM_REGISTRATION`, `MANYKEY_OPTION_INCLUDE_INJECTED`, `MANYKEY_OPTION_RELEASE_ON_UNPLUG`, `MANYKEY_OPTION_RELEASE_ON_FOCUS_LOSS`), then `manykey_open_with(&opts, &ctx)`. Always start from `manykey_options_default`: the two release flags are *on* in the defaults, so a zeroed struct switches them off.
+
+**`OwnProcessFocused` is a courtesy, not a security boundary.** The operating system still lets your process observe input while it isn't focused; the library simply doesn't pass those events on. It exists so a game or app that only cares about its own input can say so, and so that your users and reviewers can see that's what you asked for.
+
+## What manykey does to your program
+
+A library that reads raw keyboard input should say exactly what it does. This section is about the library as a whole; each backend's own behaviour is described under [Backends](#backends).
+
+**What it reads.** Every keystroke on every keyboard, including while your window isn't focused (unless you choose `OwnProcessFocused`). This is the same capability a keylogger would use, so treat it as one: don't ship it in software whose users wouldn't expect it, and don't send what it reports anywhere they wouldn't expect.
+
+**What it doesn't do.**
+- It **observes only**. It never blocks, changes, delays or injects keystrokes *into the operating system or other programs*. Other programs, including your own, still get their keys as usual. (It can add a few synthesized events to *your own* event stream; they're on by default, switchable, and listed under [Events](#events).)
+- No driver, no kernel component, no hooks (`SetWindowsHookEx`), and on Windows no administrator rights.
+- It does not poll or ask the OS for the current state of keys. It only reports the events it receives.
+- It does not log, store or transmit anything. The library makes no network connections and writes no files. (The [viewer app](#the-viewer-app) saves a small preferences file; the library does not.)
+
+**What it changes in your process.**
+- It starts background threads, and the Windows and Linux backends do a little extra housekeeping, listed per backend above (opening device handles to read names; rescanning for hotplug; the optional timers).
+- On Windows, **raw input registration is per process**, so manykey and another raw-input user in the same process can take it from each other (see the Raw Input section). Two `Listener`s in one process currently have this problem with each other too. Open one and share it.
+
+## Linux permissions
+
+Reading `/dev/input/event*` normally needs membership of the `input` group (or an ACL granted by a udev rule). **Be aware what that means:** any program running as that user can then read every keystroke, including passwords typed into other windows, regardless of focus. That's a real cost, and one reason a lower-privilege backend is on the roadmap.
+
+- If manykey can't open the devices, you'll get a permission error.
+- Adding yourself to the `input` group (`sudo usermod -aG input $USER`, then log in again) is the simple route for your own machine.
+- Shipping software that requires this to ordinary users is a decision to make deliberately.
+
+## Limitations and FAQ
+
+**Why doesn't it show my Fn key?** On nearly every keyboard, Fn is handled inside the keyboard's firmware and never sent to the computer. Software, including manykey, can only see its effects (for example, F5 versus a brightness key).
+
+**Why don't my media or brightness keys show up?** Some media keys arrive as ordinary keyboard keys and are reported (play/pause, next/previous, stop, mute, volume). Other keys, brightness among them on the keyboard we tried, didn't show up at all. Our current guess is that they're sent as a different kind of HID report that the Windows backend doesn't read yet, but we haven't confirmed that. On Linux, evdev defines brightness key codes that the evdev backend maps, though we haven't tested them.
+
+**Can it tell two identical keyboards apart?** While they're plugged in, that's the intent: each gets its own id. We haven't been able to test with two identical keyboards. Recognising which is which across runs is best-effort; see [Keyboards](#keyboards).
+
+**Does it work in remote-desktop sessions, virtual machines or with virtual keyboards?** **Untested.** We don't know how remote-desktop clients, virtual machines, KVM switches or software keyboards appear to each backend. Expect surprises, and please report what you see.
+
+**What happens if a key release is lost?** On Windows we have seen keys left "down" after a release that manykey never received. We suspect input going elsewhere (the lock screen, a UAC prompt, an elevated window) but haven't confirmed the cause. manykey deliberately doesn't poll the OS to repair this behind your back; if it matters for your app, offer a "reset held keys" action. The [viewer](#the-viewer-app) has a button that asks Windows which lit keys are really down.
+
+**Can I use it to block or remap keys?** No. manykey only observes. Blocking requires a driver or hooks, which it deliberately avoids.
+
+**Is `KeyboardId` the same on every run?** No. Use `KeyboardInfo` to recognise keyboards across runs.
+
+## The viewer app
+
+`apps/keyboard-view` is a small egui app that doubles as the best way to see what manykey does: one tile per connected keyboard, each drawing a keyboard whose keys light up as they're pressed, with a typing box per keyboard.
+
+```text
+cargo run -p manykey-view
+cargo run -p manykey-view -- --focused    # only react while the viewer has focus
+cargo run -p manykey-view -- --log        # also print every event to stdout
+```
+
+- Pick each keyboard's form factor from its dropdown (all keys, standard, no numpad, 75%, compact, keypad-only). The choice is remembered per keyboard in `%APPDATA%\manykey\viewer.conf` (Windows) or `~/.config/manykey/viewer.conf`.
+- A key that isn't part of a keyboard's chosen form factor turns the tile border orange and is listed ("Not in this layout"): either the layout needs changing, or something unexpected is sending keys.
+- "Show advanced keyboard information" reveals each keyboard's location and device path. "Release stuck keys" asks Windows which lit keys are really down and un-lights the rest, but only when you click it. That check uses a Windows API from the viewer itself; it is not part of the library, which doesn't query key state.
+- Layouts live one per file in `apps/keyboard-view/src/layouts/`. Adding one is a short file plus a line in `mod.rs`.
+
+## Building and testing
+
+You need a recent stable Rust toolchain.
+
+```text
+cargo build --release          # library, C libraries, and the manykey command line tool
+cargo test --workspace         # unit tests (no keyboard hardware needed)
+cargo run -p manykey-view      # the viewer (builds egui; the first build is slow)
+```
+
+To regenerate the C header after changing `src/capi.rs`:
+
+```text
+cbindgen --config cbindgen.toml --crate manykey --output include/manykey.h
+```
+
+Layout of the repository:
+
+```text
+src/                  the library
+src/backend/          one file per backend (windows.rs, linux.rs)
+include/manykey.h     generated C header
+examples/             C example
+apps/keyboard-view/   the viewer app (separate crate; not built by default)
+```
+
+## Roadmap
+
+Roughly in order, and subject to change:
+
+- Run and fix the Linux (evdev) backend on real hardware; add a clear "permission denied" explanation and a `manykey doctor` command.
+- Build the XInput2 backend for lower-privilege Linux use (the `backend` option already exists to select it).
+- A shared Windows backend so several `Listener`s in one process don't compete.
+- `keyboards()` for synchronous inventory, and `held_keys()` snapshots for recovering from overflow.
+- Windows support for HID Consumer-page keys (brightness and friends).
+- Bindings and packaging: Python, a Godot extension, .NET, Debian packages.
+- Publish to crates.io.
+
+## Contributing
+
+Issues and pull requests are welcome at <https://github.com/libmanykey/manykey>. If you report a bug, include your OS, what keyboards were attached, and the output of `manykey list` / `manykey watch`.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

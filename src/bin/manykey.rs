@@ -1,8 +1,10 @@
-use manykey::{Event, KeyState, Listener};
+use manykey::{BackendKind, Event, EventOrigin, KeyState, Listener, Options};
 use std::time::{Duration, Instant};
 
 fn usage() -> ! {
-    eprintln!("usage: manykey <list|watch>\n  list   show connected keyboards\n  watch  print keyboards and key events as they happen");
+    eprintln!(
+        "usage: manykey <list|watch> [--include-injected] [--backend NAME]\n  list   show connected keyboards\n  watch  print keyboards and key events as they happen\n\n  --include-injected  also report software-injected input (Windows)\n  --backend NAME      auto (default), raw-input (Windows) or evdev (Linux)"
+    );
     std::process::exit(2)
 }
 
@@ -14,8 +16,20 @@ fn id_str(vid: Option<u16>, pid: Option<u16>) -> String {
 }
 
 fn main() {
-    let cmd = std::env::args().nth(1).unwrap_or_else(|| usage());
-    let listener = match Listener::new() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let cmd = args.first().cloned().unwrap_or_else(|| usage());
+    let mut options = Options::default();
+    let mut rest = args[1..].iter();
+    while let Some(a) = rest.next() {
+        match a.as_str() {
+            "--include-injected" => options.include_injected = true,
+            "--backend" => {
+                options.backend = rest.next().and_then(|n| BackendKind::from_name(n)).unwrap_or_else(|| usage());
+            }
+            _ => usage(),
+        }
+    }
+    let listener = match Listener::with_options(options) {
         Ok(l) => l,
         Err(e) => {
             eprintln!("manykey: {e}");
@@ -44,7 +58,8 @@ fn main() {
                             KeyState::Released => "up",
                             KeyState::Repeat => "repeat",
                         };
-                        println!("keyboard {}  {:<12} {:<6} (native {:#06x})", k.keyboard.0, k.key.name(), s, k.native_code);
+                        let note = if k.origin == EventOrigin::Synthesized { "  [synthesized]" } else { "" };
+                        println!("keyboard {}  {:<12} {:<6} (native {:#06x}){note}", k.keyboard.0, k.key.name(), s, k.native_code);
                     }
                 }
             }

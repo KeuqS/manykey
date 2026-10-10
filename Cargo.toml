@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 description = "Receive keyboard input tagged with the physical keyboard it came from"
+repository = "https://github.com/libmanykey/manykey"
+readme = "README.md"
+keywords = ["keyboard", "input", "rawinput", "evdev", "multiplayer"]
+categories = ["hardware-support", "os"]
 
 [lib]
 crate-type = ["rlib", "cdylib", "staticlib"]
@@ -22,6 +26,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_LibraryLoader",
     "Win32_System_Registry",
     "Win32_System_Threading",
+    "Win32_UI_Accessibility",
     "Win32_UI_Input",
     "Win32_UI_WindowsAndMessaging",
 ] }

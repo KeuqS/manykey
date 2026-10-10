@@ -7,7 +7,7 @@
 
 #![allow(non_camel_case_types)]
 
-use crate::{Event, KeyState, Key, Listener};
+use crate::{BackendKind, Event, EventOrigin, Key, KeyState, Listener, Options, Scope, DEFAULT_CAPACITY};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, CString};
@@ -19,6 +19,39 @@ pub const MANYKEY_EVENT_KEYBOARD_ADDED: u32 = 1;
 pub const MANYKEY_EVENT_KEYBOARD_REMOVED: u32 = 2;
 pub const MANYKEY_EVENT_KEY: u32 = 3;
 pub const MANYKEY_EVENT_OVERFLOW: u32 = 4;
+
+/// `manykey_options.scope`: report every keystroke (the default).
+pub const MANYKEY_SCOPE_GLOBAL: u32 = 0;
+/// `manykey_options.scope`: only while a window of this process has focus.
+/// Windows only; `manykey_open_with` fails elsewhere.
+pub const MANYKEY_SCOPE_OWN_PROCESS_FOCUSED: u32 = 1;
+
+/// `manykey_options.flags`: Windows: re-take raw keyboard registration if
+/// another component of this process takes it over. Off by default.
+pub const MANYKEY_OPTION_RECLAIM_REGISTRATION: u32 = 1 << 0;
+/// `manykey_options.flags`: Windows: also report software-injected input as an
+/// extra pseudo-keyboard. Off by default.
+pub const MANYKEY_OPTION_INCLUDE_INJECTED: u32 = 1 << 1;
+
+/// `manykey_options.backend`: the best backend for this platform (the default).
+pub const MANYKEY_BACKEND_AUTO: u32 = 0;
+/// `manykey_options.backend`: Windows Raw Input.
+pub const MANYKEY_BACKEND_RAW_INPUT: u32 = 1;
+/// `manykey_options.backend`: Linux evdev.
+pub const MANYKEY_BACKEND_EVDEV: u32 = 2;
+
+/// `manykey_options.flags`: when a keyboard is unplugged while holding keys,
+/// emit a release for each before `KEYBOARD_REMOVED`. On by default.
+pub const MANYKEY_OPTION_RELEASE_ON_UNPLUG: u32 = 1 << 2;
+/// `manykey_options.flags`: with `MANYKEY_SCOPE_OWN_PROCESS_FOCUSED`, emit a
+/// release for every held key when focus is lost. On by default.
+pub const MANYKEY_OPTION_RELEASE_ON_FOCUS_LOSS: u32 = 1 << 3;
+
+/// `manykey_event.origin`: the OS reported this key event.
+pub const MANYKEY_ORIGIN_NATIVE: u32 = 0;
+/// `manykey_event.origin`: manykey generated this key event (for example a
+/// release for a key still held when its keyboard was unplugged).
+pub const MANYKEY_ORIGIN_SYNTHESIZED: u32 = 1;
 
 pub const MANYKEY_KEY_RELEASED: u32 = 0;
 pub const MANYKEY_KEY_PRESSED: u32 = 1;
@@ -53,10 +86,27 @@ pub struct manykey_event {
     pub native_code: u32,
     /// `MANYKEY_KEY_*`. Valid for `MANYKEY_EVENT_KEY`.
     pub state: u32,
-    pub reserved: u32,
+    /// `MANYKEY_ORIGIN_*`. Valid for `MANYKEY_EVENT_KEY`.
+    pub origin: u32,
     /// Cumulative discard count. Valid for `MANYKEY_EVENT_OVERFLOW`, which
     /// means events were lost: **clear any held-key state you track**.
     pub dropped: u64,
+}
+
+/// Settings for `manykey_open_with`. Start from `manykey_options_default`,
+/// change what you need, and leave `size` as it set it.
+#[repr(C)]
+pub struct manykey_options {
+    pub size: u32,
+    /// Events the queue holds before discarding the oldest; 0 means the default.
+    pub capacity: u32,
+    /// `MANYKEY_SCOPE_*`
+    pub scope: u32,
+    /// Bitwise OR of `MANYKEY_OPTION_*`. Note that two of them are *on* in
+    /// `manykey_options_default`; a zeroed struct turns them off.
+    pub flags: u32,
+    /// `MANYKEY_BACKEND_*`
+    pub backend: u32,
 }
 
 /// Describes a keyboard. Set `size` to `sizeof(manykey_keyboard_info)`.
@@ -93,7 +143,7 @@ fn c_string(s: &str) -> CString {
 
 impl manykey_context {
     fn convert(&mut self, ev: Event, out: &mut manykey_event) {
-        out.reserved = 0;
+        out.origin = MANYKEY_ORIGIN_NATIVE;
         out.dropped = 0;
         out.key = 0;
         out.native_code = 0;
@@ -127,6 +177,10 @@ impl manykey_context {
                 out.keyboard_id = k.keyboard.0;
                 out.key = k.key.0;
                 out.native_code = k.native_code;
+                out.origin = match k.origin {
+                    EventOrigin::Native => MANYKEY_ORIGIN_NATIVE,
+                    EventOrigin::Synthesized => MANYKEY_ORIGIN_SYNTHESIZED,
+                };
                 out.state = match k.state {
                     KeyState::Released => MANYKEY_KEY_RELEASED,
                     KeyState::Pressed => MANYKEY_KEY_PRESSED,
@@ -167,14 +221,80 @@ pub extern "C" fn manykey_last_error() -> *const c_char {
     LAST_ERROR.with(|e| e.borrow().as_ptr())
 }
 
-/// Start listening. Returns 0 and sets `*out` on success, -1 on error.
+fn options_from_c(o: &manykey_options) -> Result<Options, String> {
+    let scope = match o.scope {
+        MANYKEY_SCOPE_GLOBAL => Scope::Global,
+        MANYKEY_SCOPE_OWN_PROCESS_FOCUSED => Scope::OwnProcessFocused,
+        other => return Err(format!("unknown scope {other}")),
+    };
+    let backend = match o.backend {
+        MANYKEY_BACKEND_AUTO => BackendKind::Auto,
+        MANYKEY_BACKEND_RAW_INPUT => BackendKind::RawInput,
+        MANYKEY_BACKEND_EVDEV => BackendKind::Evdev,
+        other => return Err(format!("unknown backend {other}")),
+    };
+    let known = MANYKEY_OPTION_RECLAIM_REGISTRATION
+        | MANYKEY_OPTION_INCLUDE_INJECTED
+        | MANYKEY_OPTION_RELEASE_ON_UNPLUG
+        | MANYKEY_OPTION_RELEASE_ON_FOCUS_LOSS;
+    if o.flags & !known != 0 {
+        return Err(format!("unknown option flags {:#x}", o.flags & !known));
+    }
+    Ok(Options {
+        capacity: if o.capacity == 0 { DEFAULT_CAPACITY } else { o.capacity as usize },
+        scope,
+        reclaim_registration: o.flags & MANYKEY_OPTION_RECLAIM_REGISTRATION != 0,
+        include_injected: o.flags & MANYKEY_OPTION_INCLUDE_INJECTED != 0,
+        release_on_unplug: o.flags & MANYKEY_OPTION_RELEASE_ON_UNPLUG != 0,
+        release_on_focus_loss: o.flags & MANYKEY_OPTION_RELEASE_ON_FOCUS_LOSS != 0,
+        backend,
+    })
+}
+
+/// Fill `*out` with the default options (what `manykey_open` uses).
+#[no_mangle]
+pub unsafe extern "C" fn manykey_options_default(out: *mut manykey_options) {
+    if !out.is_null() {
+        *out = manykey_options {
+            size: std::mem::size_of::<manykey_options>() as u32,
+            capacity: DEFAULT_CAPACITY as u32,
+            scope: MANYKEY_SCOPE_GLOBAL,
+            flags: MANYKEY_OPTION_RELEASE_ON_UNPLUG | MANYKEY_OPTION_RELEASE_ON_FOCUS_LOSS,
+            backend: MANYKEY_BACKEND_AUTO,
+        };
+    }
+}
+
+/// Start listening with default options. Returns 0 and sets `*out` on
+/// success, -1 on error.
 #[no_mangle]
 pub unsafe extern "C" fn manykey_open(out: *mut *mut manykey_context) -> c_int {
+    open_with(Options::default(), out)
+}
+
+/// Start listening with the given options. Returns 0 and sets `*out` on
+/// success, -1 on error (see `manykey_last_error`).
+#[no_mangle]
+pub unsafe extern "C" fn manykey_open_with(options: *const manykey_options, out: *mut *mut manykey_context) -> c_int {
+    if options.is_null() || (*options).size < std::mem::size_of::<manykey_options>() as u32 {
+        set_error("manykey_options: null, or size not set (use manykey_options_default)");
+        return -1;
+    }
+    match options_from_c(&*options) {
+        Ok(o) => open_with(o, out),
+        Err(e) => {
+            set_error(e);
+            -1
+        }
+    }
+}
+
+unsafe fn open_with(options: Options, out: *mut *mut manykey_context) -> c_int {
     if out.is_null() {
         set_error("null out pointer");
         return -1;
     }
-    match Listener::new() {
+    match Listener::with_options(options) {
         Ok(listener) => {
             *out = Box::into_raw(Box::new(manykey_context { listener, keyboards: HashMap::new() }));
             0
@@ -303,7 +423,7 @@ mod tests {
             key: 0,
             native_code: 0,
             state: 0,
-            reserved: 0,
+            origin: 0,
             dropped: 0,
         }
     }
@@ -339,9 +459,74 @@ mod tests {
             assert_eq!(ev.keyboard_id, id.0);
             assert_eq!(ev.key, Key::Space.0);
             assert_eq!(ev.state, MANYKEY_KEY_PRESSED);
+            assert_eq!(ev.origin, MANYKEY_ORIGIN_NATIVE);
 
             assert_eq!(manykey_wait(c, &mut ev, 10), 0);
             assert_eq!(manykey_poll(c, &mut ev), 0);
+            manykey_close(c);
+        }
+    }
+
+    #[test]
+    fn options_round_trip_through_c_struct() {
+        let mut o = std::mem::MaybeUninit::<manykey_options>::uninit();
+        let o = unsafe {
+            manykey_options_default(o.as_mut_ptr());
+            o.assume_init()
+        };
+        let d = options_from_c(&o).unwrap();
+        assert_eq!(d.capacity, DEFAULT_CAPACITY);
+        assert_eq!(d.scope, Scope::Global);
+        assert!(!d.reclaim_registration && !d.include_injected);
+        assert!(d.release_on_unplug && d.release_on_focus_loss, "synthesized releases default on");
+        assert_eq!(d.backend, BackendKind::Auto);
+        // The C defaults must agree with the Rust defaults.
+        let r = Options::default();
+        assert_eq!((d.capacity, d.scope, d.reclaim_registration, d.include_injected, d.release_on_unplug, d.release_on_focus_loss, d.backend),
+                   (r.capacity, r.scope, r.reclaim_registration, r.include_injected, r.release_on_unplug, r.release_on_focus_loss, r.backend));
+
+        let custom = manykey_options {
+            capacity: 0,
+            scope: MANYKEY_SCOPE_OWN_PROCESS_FOCUSED,
+            flags: MANYKEY_OPTION_RECLAIM_REGISTRATION | MANYKEY_OPTION_INCLUDE_INJECTED,
+            backend: MANYKEY_BACKEND_EVDEV,
+            ..o
+        };
+        let c = options_from_c(&custom).unwrap();
+        assert_eq!(c.capacity, DEFAULT_CAPACITY, "0 means default");
+        assert_eq!(c.scope, Scope::OwnProcessFocused);
+        assert!(c.reclaim_registration && c.include_injected);
+        assert!(!c.release_on_unplug && !c.release_on_focus_loss, "flags not set means off");
+        assert_eq!(c.backend, BackendKind::Evdev);
+    }
+
+    #[test]
+    fn rejects_unknown_options() {
+        let base = manykey_options { size: std::mem::size_of::<manykey_options>() as u32, capacity: 1, scope: 0, flags: 0, backend: 0 };
+        assert!(options_from_c(&manykey_options { scope: 99, ..base }).is_err());
+        assert!(options_from_c(&manykey_options { flags: 1 << 20, ..base }).is_err());
+        assert!(options_from_c(&manykey_options { backend: 99, ..base }).is_err());
+        unsafe {
+            let mut out: *mut manykey_context = std::ptr::null_mut();
+            assert_eq!(manykey_open_with(std::ptr::null(), &mut out), -1);
+            let unsized_opts = manykey_options { size: 0, ..base };
+            assert_eq!(manykey_open_with(&unsized_opts, &mut out), -1);
+            assert!(out.is_null());
+        }
+    }
+
+    #[test]
+    fn origin_is_carried_through_the_c_api() {
+        let (c, mut fake) = fake_ctx();
+        let c = Box::into_raw(Box::new(c));
+        let id = fake.add("x");
+        fake.key_synthesized(id, Key::A, KeyState::Released);
+        unsafe {
+            let mut ev = new_event();
+            assert_eq!(manykey_poll(c, &mut ev), 1); // KeyboardAdded
+            assert_eq!(manykey_poll(c, &mut ev), 1);
+            assert_eq!(ev.r#type, MANYKEY_EVENT_KEY);
+            assert_eq!(ev.origin, MANYKEY_ORIGIN_SYNTHESIZED);
             manykey_close(c);
         }
     }

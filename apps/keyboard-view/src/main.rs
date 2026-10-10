@@ -9,7 +9,7 @@ mod typing;
 use eframe::egui::{self, Align2, Color32, FontId, Rect, Sense, Shape as Paint, Stroke, StrokeKind, Vec2};
 use layout::{Dir, Layout, Shape};
 use layouts::FormFactor;
-use manykey::{Event, Key, KeyState, KeyboardId, KeyboardInfo, Listener};
+use manykey::{Event, Key, KeyState, KeyboardId, KeyboardInfo, Listener, Options, Scope};
 use prefs::Prefs;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
@@ -463,7 +463,22 @@ fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
 }
 
 fn main() -> eframe::Result {
-    let listener = match Listener::new() {
+    // `--focused`: only react while this window has focus (the library drops input otherwise).
+    // `--log`: also print every event to stdout.
+    // `--no-release-on-unplug`, `--no-release-on-focus-loss`: turn off manykey's synthesized releases.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let log = args.iter().any(|a| a == "--log");
+    let options = Options {
+        scope: if args.iter().any(|a| a == "--focused") { Scope::OwnProcessFocused } else { Scope::Global },
+        // The window library (winit) registers for raw keyboard input itself; take it back.
+        reclaim_registration: true,
+        // Show injected input too, so a macro tool's output is visible here.
+        include_injected: true,
+        release_on_unplug: !args.iter().any(|a| a == "--no-release-on-unplug"),
+        release_on_focus_loss: !args.iter().any(|a| a == "--no-release-on-focus-loss"),
+        ..Options::default()
+    };
+    let listener = match Listener::with_options(options) {
         Ok(l) => l,
         Err(e) => {
             eprintln!("manykey-view: {e}");
@@ -474,6 +489,9 @@ fn main() -> eframe::Result {
     // Forward events to the UI thread. The UI polls on a timer, so no repaint hook is needed.
     std::thread::spawn(move || {
         for ev in listener.iter() {
+            if log {
+                println!("{ev:?}");
+            }
             if tx.send(ev).is_err() {
                 break;
             }
