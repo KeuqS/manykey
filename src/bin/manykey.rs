@@ -59,6 +59,7 @@ fn main() {
                             KeyState::Pressed => "down",
                             KeyState::Released => "up",
                             KeyState::Repeat => "repeat",
+                            _ => "?", // a state added after this tool was written
                         };
                         let note = if k.origin == EventOrigin::Synthesized { "  [synthesized]" } else { "" };
                         println!(
@@ -69,6 +70,7 @@ fn main() {
                             k.native_code
                         );
                     }
+                    _ => {} // an event kind added after this tool was written
                 }
             }
         }

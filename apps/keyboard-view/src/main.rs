@@ -151,6 +151,7 @@ impl App {
                             t.outside.insert((k.key, k.native_code), Instant::now());
                         }
                     }
+                    _ => {} // a key state added after this viewer was written
                 }
             }
             // Events were lost: a release may be missing. Reset rather than show stuck keys.
@@ -160,6 +161,7 @@ impl App {
                     t.down.clear();
                 }
             }
+            _ => {} // an event kind added after this viewer was written
         }
     }
 }

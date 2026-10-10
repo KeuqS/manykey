@@ -133,6 +133,58 @@ mod tests {
         assert_eq!(EventOrigin::default(), EventOrigin::Native);
     }
 
+    /// Is the OS wait handle signalled right now, according to the OS itself?
+    #[cfg(target_os = "linux")]
+    fn handle_is_signalled(handle: isize) -> bool {
+        let mut p = libc::pollfd { fd: handle as i32, events: libc::POLLIN, revents: 0 };
+        unsafe { libc::poll(&mut p, 1, 0) == 1 && p.revents & libc::POLLIN != 0 }
+    }
+
+    #[cfg(windows)]
+    fn handle_is_signalled(handle: isize) -> bool {
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        unsafe { WaitForSingleObject(handle as _, 0) == WAIT_OBJECT_0 }
+    }
+
+    /// The README tells people to hand `wait_handle()` to their own event loop,
+    /// so check the real OS object: signalled exactly while events are pending.
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn wait_handle_is_signalled_exactly_while_events_are_pending() {
+        let (l, mut fake) = Listener::fake(8);
+        let h = l.wait_handle();
+        assert!(h >= 0, "a real handle");
+        assert!(!handle_is_signalled(h), "nothing pending yet");
+
+        let a = fake.add("A");
+        assert!(handle_is_signalled(h), "an event is pending");
+        fake.press(a, Key::A);
+        assert!(handle_is_signalled(h), "still pending after a second event");
+
+        assert!(l.try_recv().is_some());
+        assert!(handle_is_signalled(h), "one event still pending");
+        assert!(l.try_recv().is_some());
+        assert!(!handle_is_signalled(h), "drained: no longer signalled");
+
+        fake.press(a, Key::B);
+        assert!(handle_is_signalled(h), "signalled again by the next event");
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn wait_handle_stays_signalled_for_a_pending_overflow_marker() {
+        let (l, mut fake) = Listener::fake(1);
+        let a = fake.add("A");
+        fake.press(a, Key::A); // capacity 1: discards the older event and queues an Overflow marker
+        let h = l.wait_handle();
+        assert!(handle_is_signalled(h));
+        assert!(matches!(l.try_recv(), Some(Event::Overflow { .. })));
+        assert!(handle_is_signalled(h), "the surviving event is still pending");
+        assert!(l.try_recv().is_some());
+        assert!(!handle_is_signalled(h));
+    }
+
     #[test]
     fn recv_timeout_returns_none_when_idle() {
         let (l, _fake) = Listener::fake(8);

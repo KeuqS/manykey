@@ -8,6 +8,8 @@ repository = "https://github.com/libmanykey/manykey"
 readme = "README.md"
 keywords = ["keyboard", "input", "rawinput", "evdev", "multiplayer"]
 categories = ["hardware-support", "os"]
+# Development-only files that needn't ship in the published crate.
+exclude = [".github/", "ci/", "docs/", "rustfmt.toml"]
 
 [lib]
 crate-type = ["rlib", "cdylib", "staticlib"]

@@ -49,6 +49,7 @@ impl BackendKind {
 
 /// Whose keystrokes the listener reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum Scope {
     /// Every keystroke on every keyboard, whichever program has focus. This is
     /// what a background tool (macro helper, overlay) needs.
@@ -142,6 +143,7 @@ pub struct KeyboardInfo {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum KeyState {
     Pressed,
     Released,
@@ -153,6 +155,7 @@ pub enum KeyState {
 
 /// Where a [`KeyEvent`] came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum EventOrigin {
     /// The operating system reported this key event.
     #[default]
@@ -180,6 +183,7 @@ pub struct KeyEvent {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Event {
     KeyboardAdded(KeyboardInfo),
     KeyboardRemoved(KeyboardId),

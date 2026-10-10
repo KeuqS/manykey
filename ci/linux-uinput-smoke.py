@@ -3,13 +3,15 @@
 
 Creates keyboards through /dev/uinput (needs root), runs `manykey watch`
 against them, and checks key events, hot-plug, and that unplugging a keyboard
-while a key is held produces a release followed by its removal.
+while a key is held produces a release followed by its removal. Also checks that
+an unprivileged user gets a clear permission error rather than an empty list.
 
 Usage: sudo python3 ci/linux-uinput-smoke.py target/debug/manykey
 """
 import fcntl
 import os
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -90,6 +92,36 @@ def evaluate(out):
     return failures, notes
 
 
+def evaluate_unprivileged(returncode, out):
+    """Without access to /dev/input, manykey must fail loudly, not report an empty list."""
+    failures = []
+    if returncode == 0:
+        failures.append("manykey succeeded without permission to read input devices; "
+                        "it should have failed (or this runner lets 'nobody' read /dev/input)")
+    elif not re.search(r"permission denied", out, re.I):
+        failures.append("it failed, but the error doesn't mention permission denied")
+    elif "input` group" not in out:
+        failures.append("the permission error doesn't tell the user about the `input` group")
+    return failures
+
+
+def check_unprivileged(binary):
+    """Run `manykey list` as an unprivileged user while a keyboard exists."""
+    kb = VirtualKeyboard("manykey-ci-perm", 0x1234, 0x7777)
+    time.sleep(1.0)
+    copy = "/tmp/manykey-unprivileged"
+    try:
+        shutil.copy(binary, copy)  # a path the unprivileged user can execute
+        os.chmod(copy, 0o755)
+        r = subprocess.run(["runuser", "-u", "nobody", "--", copy, "list"],
+                           capture_output=True, text=True, timeout=30)
+    finally:
+        kb.destroy()
+    out = r.stdout + r.stderr
+    print("== unprivileged `manykey list` (exit %d)\n%s" % (r.returncode, out))
+    return evaluate_unprivileged(r.returncode, out)
+
+
 def main(binary):
     kb = VirtualKeyboard("manykey-ci-kbd", 0x1234, 0x5678)
     time.sleep(1.0)  # let udev/the kernel publish the device
@@ -122,6 +154,8 @@ def main(binary):
     failures, notes = evaluate(out)
     for n in notes:
         print("note: " + n)
+
+    failures += check_unprivileged(binary)
 
     if failures:
         print("\nFAILED:\n  - " + "\n  - ".join(failures))

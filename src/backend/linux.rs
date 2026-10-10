@@ -39,7 +39,28 @@ impl LinuxBackend {
         }
         let release_on_unplug = options.release_on_unplug;
         // Fail early if /proc is unusable rather than silently reporting nothing.
-        list_keyboards()?;
+        let keyboards = list_keyboards()?;
+        // Opening a device is where missing permission shows up. If keyboards
+        // exist but none can be opened, say so, instead of reporting an empty
+        // keyboard list that looks like "no keyboards".
+        if !keyboards.is_empty() {
+            let mut first_error = None;
+            let mut opened = false;
+            for kb in &keyboards {
+                match File::open(&kb.path) {
+                    Ok(_) => {
+                        opened = true;
+                        break;
+                    }
+                    Err(e) => {
+                        first_error.get_or_insert((kb.path.clone(), e));
+                    }
+                }
+            }
+            if let (false, Some((path, err))) = (opened, first_error) {
+                return Err(open_failure(&path, &err));
+            }
+        }
         let stop = Arc::new(AtomicBool::new(false));
         let s = stop.clone();
         let thread = thread::Builder::new()
@@ -56,6 +77,18 @@ impl Drop for LinuxBackend {
             let _ = t.join();
         }
     }
+}
+
+/// An error for a device we couldn't open, with what to do about it.
+fn open_failure(path: &str, err: &io::Error) -> io::Error {
+    let hint = if err.kind() == io::ErrorKind::PermissionDenied {
+        " Reading input devices normally needs membership of the `input` group (log out and back in after \
+         adding yourself). That permission lets any program you run read every keystroke; see \
+         https://github.com/libmanykey/manykey#linux-permissions"
+    } else {
+        ""
+    };
+    io::Error::new(err.kind(), format!("cannot open {path}: {err}.{hint}"))
 }
 
 struct Found {
@@ -210,6 +243,20 @@ fn read_device(mut file: File, id: KeyboardId, tx: &EventSink, stop: &AtomicBool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permission_failures_explain_the_input_group() {
+        let e = open_failure("/dev/input/event3", &io::Error::from(io::ErrorKind::PermissionDenied));
+        assert_eq!(e.kind(), io::ErrorKind::PermissionDenied);
+        let msg = e.to_string();
+        assert!(msg.contains("/dev/input/event3") && msg.contains("`input` group"), "{msg}");
+    }
+
+    #[test]
+    fn other_open_failures_do_not_blame_permissions() {
+        let e = open_failure("/dev/input/event3", &io::Error::from(io::ErrorKind::NotFound));
+        assert!(!e.to_string().contains("input` group"));
+    }
 
     #[test]
     fn release_events_cover_every_held_key_in_order() {
