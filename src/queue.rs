@@ -95,7 +95,7 @@ impl EventSink {
         let s = &self.0;
         let mut g = s.q.lock().unwrap();
         if g.q.len() >= s.capacity {
-            let find = |want: &dyn Fn(&Event) -> bool| g.q.iter().position(|e| want(e));
+            let find = |want: &dyn Fn(&Event) -> bool| g.q.iter().position(want);
             let victim = find(&|e| matches!(e, Event::Key(k) if k.state == KeyState::Repeat))
                 .or_else(|| find(&|e| matches!(e, Event::Key(k) if k.state == KeyState::Pressed)))
                 .or_else(|| find(&|e| matches!(e, Event::Key(_))))

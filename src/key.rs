@@ -96,7 +96,7 @@ pub fn from_evdev(code: u32) -> Key {
     let hid: u32 = match code {
         1 => 0x29,
         2..=10 => 0x1E + (code - 2), // 1..9
-        11 => 0x27,                         // 0
+        11 => 0x27,                  // 0
         12 => 0x2D,
         13 => 0x2E,
         14 => 0x2A,
@@ -185,12 +185,12 @@ pub fn from_evdev(code: u32) -> Key {
         125 => 0xE3,
         126 => 0xE7,
         127 => 0x65,
-        163 => 0x000C_00B5, // next song
-        164 => 0x000C_00CD, // play/pause
-        165 => 0x000C_00B6, // previous song
-        166 => 0x000C_00B7, // stop
-        224 => 0x000C_0070, // brightness down
-        225 => 0x000C_006F, // brightness up
+        163 => 0x000C_00B5,               // next song
+        164 => 0x000C_00CD,               // play/pause
+        165 => 0x000C_00B6,               // previous song
+        166 => 0x000C_00B7,               // stop
+        224 => 0x000C_0070,               // brightness down
+        225 => 0x000C_006F,               // brightness up
         183..=194 => 0x68 + (code - 183), // F13..F24
         _ => 0,
     };
@@ -223,12 +223,12 @@ pub fn from_windows_scancode(code: u32) -> Key {
         0xE020 => 113,
         0xE02E => 114,
         0xE030 => 115,
-        0xE145 => 119, // Pause
-        0xE045 => 69,  // NumLock, as some keyboards report it
-        0xE010 => 165, // previous track
-        0xE019 => 163, // next track
-        0xE022 => 164, // play/pause
-        0xE024 => 166, // stop
+        0xE145 => 119,                      // Pause
+        0xE045 => 69,                       // NumLock, as some keyboards report it
+        0xE010 => 165,                      // previous track
+        0xE019 => 163,                      // next track
+        0xE022 => 164,                      // play/pause
+        0xE024 => 166,                      // stop
         0x64..=0x6E => 183 + (code - 0x64), // F13..F23
         0x76 => 194,                        // F24
         _ => return Key::UNKNOWN,

@@ -26,11 +26,8 @@ pub struct Prefs {
 impl Prefs {
     pub fn load() -> Prefs {
         let path = config_path();
-        let factors = path
-            .as_ref()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .map(|t| parse(&t))
-            .unwrap_or_default();
+        let factors =
+            path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).map(|t| parse(&t)).unwrap_or_default();
         Prefs { path, factors }
     }
 

@@ -21,6 +21,7 @@ const FADE: Duration = Duration::from_millis(160);
 const OUTSIDE_LINGER: Duration = Duration::from_millis(2000);
 const MIN_TILE_WIDTH: f32 = 440.0;
 const WARN: Color32 = Color32::from_rgb(235, 140, 40);
+const DISCONNECTED: Color32 = Color32::from_rgb(210, 100, 100);
 
 struct Tile {
     info: KeyboardInfo,
@@ -31,7 +32,7 @@ struct Tile {
     /// Native scancode of each held key, for the optional OS check.
     native: HashMap<Key, u32>,
     /// Keys pressed that this tile's form factor doesn't draw, and when.
-    outside: HashMap<Key, Instant>,
+    outside: HashMap<(Key, u32), Instant>,
     /// Caps Lock as inferred from key presses seen since startup (the OS's own
     /// state isn't visible to us, so this can start out wrong).
     caps: bool,
@@ -54,10 +55,11 @@ impl Tile {
         let mut v: Vec<String> = self
             .outside
             .iter()
-            .filter(|(k, t)| self.down.contains(k) || now.duration_since(**t) < OUTSIDE_LINGER)
-            .map(|(k, _)| k.name())
+            .filter(|((key, _), t)| self.down.contains(key) || now.duration_since(**t) < OUTSIDE_LINGER)
+            .map(|((key, native), _)| key_label(*key, *native))
             .collect();
         v.sort();
+        v.dedup();
         v
     }
 }
@@ -71,6 +73,8 @@ struct App {
     overflows: u64,
     show_info: bool,
     enter_mode: EnterMode,
+    /// Width of the action-button group last frame, so it can wrap as one unit.
+    buttons_width: f32,
 }
 
 impl App {
@@ -85,6 +89,7 @@ impl App {
             overflows: 0,
             show_info: false,
             enter_mode: EnterMode::NewLine,
+            buttons_width: 0.0,
         }
     }
 
@@ -130,7 +135,7 @@ impl App {
                         t.down.insert(k.key);
                         t.native.insert(k.key, k.native_code);
                         if !inside {
-                            t.outside.insert(k.key, Instant::now());
+                            t.outside.insert((k.key, k.native_code), Instant::now());
                         }
                         if k.key == Key::CapsLock && k.state == KeyState::Pressed {
                             t.caps = !t.caps;
@@ -143,7 +148,7 @@ impl App {
                             t.released_at.insert(k.key, Instant::now());
                         }
                         if !inside {
-                            t.outside.insert(k.key, Instant::now());
+                            t.outside.insert((k.key, k.native_code), Instant::now());
                         }
                     }
                 }
@@ -156,6 +161,15 @@ impl App {
                 }
             }
         }
+    }
+}
+
+/// A key's name, or for keys manykey doesn't know, its raw scancode so it can be identified.
+fn key_label(key: Key, native: u32) -> String {
+    if key.is_unknown() {
+        format!("?{native:#06x}")
+    } else {
+        key.name()
     }
 }
 
@@ -202,7 +216,7 @@ impl eframe::App for App {
         let mut changes: Vec<(usize, FormFactor)> = Vec::new();
 
         egui::Frame::central_panel(ui.style()).show(ui, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.heading("manykey viewer");
                 ui.separator();
                 ui.label("Size:");
@@ -211,28 +225,39 @@ impl eframe::App for App {
                 ui.checkbox(&mut self.show_info, "Show advanced keyboard information");
                 ui.separator();
                 ui.label("Enter key:");
-                egui::ComboBox::from_id_salt("enter_mode")
-                    .selected_text(self.enter_mode.label())
-                    .show_ui(ui, |ui| {
-                        for m in EnterMode::ALL {
-                            ui.selectable_value(&mut self.enter_mode, m, m.label());
-                        }
-                    });
+                egui::ComboBox::from_id_salt("enter_mode").selected_text(self.enter_mode.label()).show_ui(ui, |ui| {
+                    for m in EnterMode::ALL {
+                        ui.selectable_value(&mut self.enter_mode, m, m.label());
+                    }
+                });
                 ui.separator();
-                if ui.button("Clear text").clicked() {
-                    for t in &mut self.tiles {
-                        t.typed.clear();
-                    }
+                // The three action buttons wrap together: if they don't fit on what's left of
+                // this row, start a new row first. (Their width is measured on the previous frame.)
+                if ui.available_size_before_wrap().x < self.buttons_width {
+                    ui.end_row();
                 }
-                if ui
-                    .button("Release stuck keys")
-                    .on_hover_text(STUCK_HELP)
-                    .clicked()
-                {
-                    for t in &mut self.tiles {
-                        release_stuck(t);
+                let buttons = ui.horizontal(|ui| {
+                    if ui.button("Clear text").clicked() {
+                        for t in &mut self.tiles {
+                            t.typed.clear();
+                        }
                     }
-                }
+                    if ui
+                        .button("Remove disconnected")
+                        .on_hover_text(
+                            "Remove tiles for keyboards that are no longer connected, along with their typed text.",
+                        )
+                        .clicked()
+                    {
+                        self.tiles.retain(|t| t.connected);
+                    }
+                    if ui.button("Release stuck keys").on_hover_text(STUCK_HELP).clicked() {
+                        for t in &mut self.tiles {
+                            release_stuck(t);
+                        }
+                    }
+                });
+                self.buttons_width = buttons.response.rect.width();
                 if self.overflows > 0 {
                     ui.separator();
                     ui.label(format!("input overflowed {}×", self.overflows));
@@ -322,7 +347,8 @@ fn draw_tile(ui: &mut egui::Ui, tile: &Tile, layout: &Layout, unit: f32, show_in
             tile.info.location.as_deref().unwrap_or("(not reported)"),
             tile.info.path
         );
-        let mut job = egui::text::LayoutJob::simple(text, FontId::monospace(10.0), vis.weak_text_color(), tile_w - pad * 2.0);
+        let mut job =
+            egui::text::LayoutJob::simple(text, FontId::monospace(10.0), vis.weak_text_color(), tile_w - pad * 2.0);
         job.wrap.break_anywhere = true;
         ui.painter().layout_job(job)
     });
@@ -334,29 +360,38 @@ fn draw_tile(ui: &mut egui::Ui, tile: &Tile, layout: &Layout, unit: f32, show_in
     let outside = tile.outside_now(now);
     let mut animating = !outside.is_empty();
 
-    let border = if outside.is_empty() { Stroke::new(1.0, vis.widgets.noninteractive.bg_stroke.color) } else { Stroke::new(2.0, WARN) };
+    let border = if outside.is_empty() {
+        Stroke::new(1.0, vis.widgets.noninteractive.bg_stroke.color)
+    } else {
+        Stroke::new(2.0, WARN)
+    };
     painter.rect(rect, 6.0, vis.faint_bg_color, border, StrokeKind::Inside);
 
     // Header: title (left), form-factor dropdown (right).
     let combo_w = 210.0;
-    let combo_rect = Rect::from_min_size(
-        egui::pos2(rect.max.x - pad - combo_w, rect.min.y + pad - 3.0),
-        Vec2::new(combo_w, 22.0),
-    );
-    let title = if tile.connected { tile_title(&tile.info) } else { format!("{} — disconnected", tile_title(&tile.info)) };
+    let combo_rect =
+        Rect::from_min_size(egui::pos2(rect.max.x - pad - combo_w, rect.min.y + pad - 3.0), Vec2::new(combo_w, 22.0));
+    let title = tile_title(&tile.info);
+    let title_color = if tile.connected { vis.strong_text_color() } else { vis.weak_text_color() };
     let title_clip = Rect::from_min_max(rect.min, egui::pos2(combo_rect.min.x - 6.0, rect.min.y + pad + 20.0));
     painter.with_clip_rect(title_clip).text(
         rect.min + Vec2::new(pad, pad),
         Align2::LEFT_TOP,
         title,
         FontId::proportional(14.0),
-        vis.strong_text_color(),
+        title_color,
     );
 
     // Second line: USB ids, then a warning if a key outside the layout was used.
+    let mut sub_x = 0.0;
+    if !tile.connected {
+        let g = painter.layout_no_wrap("disconnected".to_string(), FontId::proportional(11.0), DISCONNECTED);
+        sub_x = g.size().x + 10.0;
+        painter.galley(rect.min + Vec2::new(pad, pad + 18.0), g, DISCONNECTED);
+    }
     let ids_galley = painter.layout_no_wrap(usb_ids(&tile.info), FontId::proportional(11.0), vis.weak_text_color());
-    let ids_w = ids_galley.size().x;
-    painter.galley(rect.min + Vec2::new(pad, pad + 18.0), ids_galley, vis.weak_text_color());
+    let ids_w = ids_galley.size().x + sub_x;
+    painter.galley(rect.min + Vec2::new(pad + sub_x, pad + 18.0), ids_galley, vis.weak_text_color());
     if !outside.is_empty() {
         painter.text(
             rect.min + Vec2::new(pad + ids_w + 14.0, pad + 18.0),
@@ -423,10 +458,10 @@ fn draw_tile(ui: &mut egui::Ui, tile: &Tile, layout: &Layout, unit: f32, show_in
             draw_arrow(&painter, r.center(), unit * 0.22, dir, text_col);
             continue;
         }
-        let label = typing::char_for(k.key, shift, tile.caps)
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| k.label.to_string());
-        let font = if k.shape == Shape::Round { (unit * 0.34).clamp(7.0, 11.0) } else { (unit * 0.42).clamp(8.0, 14.0) };
+        let label =
+            typing::char_for(k.key, shift, tile.caps).map(|c| c.to_string()).unwrap_or_else(|| k.label.to_string());
+        let font =
+            if k.shape == Shape::Round { (unit * 0.34).clamp(7.0, 11.0) } else { (unit * 0.42).clamp(8.0, 14.0) };
         painter.text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(font), text_col);
     }
 
@@ -435,9 +470,16 @@ fn draw_tile(ui: &mut egui::Ui, tile: &Tile, layout: &Layout, unit: f32, show_in
         egui::pos2(rect.min.x + pad, rect.max.y - pad - text_h),
         Vec2::new(rect.width() - pad * 2.0, text_h),
     );
-    painter.rect(box_rect, 3.0, vis.extreme_bg_color, Stroke::new(1.0, vis.widgets.noninteractive.bg_stroke.color), StrokeKind::Inside);
+    painter.rect(
+        box_rect,
+        3.0,
+        vis.extreme_bg_color,
+        Stroke::new(1.0, vis.widgets.noninteractive.bg_stroke.color),
+        StrokeKind::Inside,
+    );
     let text_painter = painter.with_clip_rect(box_rect.shrink(3.0));
-    let galley = text_painter.layout(tile.typed.clone(), FontId::monospace(13.0), vis.text_color(), box_rect.width() - 10.0);
+    let galley =
+        text_painter.layout(tile.typed.clone(), FontId::monospace(13.0), vis.text_color(), box_rect.width() - 10.0);
     // Anchor the bottom of the text to the bottom of the box so it scrolls as you type.
     let y = (box_rect.max.y - 4.0 - galley.size().y).max(box_rect.min.y + 4.0);
     text_painter.galley(egui::pos2(box_rect.min.x + 5.0, y), galley, vis.text_color());
@@ -506,4 +548,16 @@ fn main() -> eframe::Result {
         },
         Box::new(|_cc| Ok(Box::new(App::new(rx)))),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_keys_are_labelled_with_their_scancode() {
+        assert_eq!(key_label(Key::UNKNOWN, 0xE05B), "?0xe05b");
+        assert_eq!(key_label(Key::UNKNOWN, 0x0), "?0x0000");
+        assert_eq!(key_label(Key::A, 0x1E), "A");
+    }
 }

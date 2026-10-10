@@ -26,11 +26,11 @@ With two keyboards attached, each keystroke carries its own `keyboard` number; t
 
 **Where it's useful:** local multiplayer games where each player has their own keyboard; macro and control surfaces (a spare keyboard or keypad that means something different from your main one); installations and kiosks; input diagnostics; anything that cares which physical device produced an input.
 
-> **Early prototype.** Run on one Windows machine with a single built-in keyboard; Linux builds but has never been run; hot-plugging, USB keyboards and multi-keyboard behaviour are untested everywhere. The API will change before 1.0, and nothing is published to crates.io or PyPI yet. Per-backend details are under [Backends](#backends).
+> **Early prototype.** Run on one Windows machine with a built-in keyboard, a USB keyboard and a ZSA Moonlander typing at the same time, and in CI on GitHub's Windows runner with injected key presses; the Linux backend has been run in CI against *virtual* keyboards but never on physical hardware; hot-plugging a keyboard on Windows has been tested with the Moonlander; two identical keyboards, and everything on Linux hardware, are untested. The API will change before 1.0, and nothing is published to crates.io or PyPI yet. Per-backend details are under [Backends](#backends).
 >
-> Throughout this document, **Tested** means it was run on real hardware (see the limits above), **Builds** means it compiles but hasn't been run, and **Planned** or **Idea** means it doesn't exist yet.
+> Throughout this document, **Tested** means it was run on real hardware (see the limits above), **Tested (virtual)** means it was run in CI against virtual keyboards but not physical ones, **Builds** means it compiles but hasn't been run, and **Planned** or **Idea** means it doesn't exist yet.
 
-**AI disclosure:** This library was developed with very significant help from several AI tools. I have reviewed all of the code myself, but I did not step through it in a debugger, and most of it has not been run on real hardware. I've done Win32 and low-level Linux device programming before and the relevant sections look sensible to me. I tested `manykey list`, `manykey watch` and `manykey-view` on Windows, found real problems, and had them fixed. Expect it to differ from hand-written code, and note that statements about how operating systems behave were written with AI assistance and are marked untested unless run on hardware. Treat it as an early prototype. How contributions are handled is described [below](#ai-use-in-development).
+**AI disclosure:** This library was developed with very significant help from several AI tools. I have reviewed all of the code myself, but I did not step through it in a debugger, and the Linux backend has not been run on real hardware. I've done Win32 and low-level Linux device programming before and the relevant sections look sensible to me. I tested `manykey list`, `manykey watch` and `manykey-view` on Windows, found real problems, and had them fixed. Expect it to differ from hand-written code, and note that statements about how operating systems behave were written with AI assistance and are marked untested unless run on hardware. Treat it as an early prototype. How contributions are handled is described [below](#ai-use-in-development).
 
 ## Contents
 
@@ -142,8 +142,8 @@ manykey is organized around **backends**. A backend is the piece that talks to o
 
 | Backend | Platform | Status | Needs | Sees unfocused input | `OwnProcessFocused` scope | Device name / USB ids / port |
 |---|---|---|---|---|---|---|
-| [Raw Input](#windows-raw-input) | Windows | **Tested** (one built-in keyboard) | nothing | yes | yes | name, USB ids / no port |
-| [evdev](#linux-evdev) | Linux | Builds | read access to `/dev/input` | yes | no (returns an error) | name, USB ids, port |
+| [Raw Input](#windows-raw-input) | Windows | **Tested** (three real keyboards; CI with injected input) | nothing | yes | yes | name, USB ids / no port |
+| [evdev](#linux-evdev) | Linux | **Tested (virtual)** | read access to `/dev/input` | yes | no (returns an error) | name, USB ids, port |
 | [XInput2](#linux-other-backends) | Linux, X11 only | Planned | an X11 session | expected yes | not yet decided | expected |
 | [libinput](#linux-other-backends) | Linux | Idea | same device access as evdev | yes | no | expected |
 | [IOHIDManager](#macos) | macOS | Not started | Input Monitoring permission | | | |
@@ -151,11 +151,12 @@ manykey is organized around **backends**. A backend is the piece that talks to o
 
 ### Windows: Raw Input
 
-*Status: tested, with limits.* Run on one machine with one built-in keyboard and software-injected input. Hot-plugging and USB keyboards are untested. The Windows backend uses the Raw Input API. It creates a hidden message-only window on its own thread and registers for keyboard input with `RIDEV_INPUTSINK`, so it receives every keyboard's keys even while your window isn't focused.
+*Status: tested, with limits.* Run on one machine with a built-in keyboard, a generic USB keyboard and a ZSA Moonlander typing simultaneously (each was reported as its own keyboard, with its product name and USB ids), with software-injected input, and in CI on GitHub's Windows runner, where injected key presses were reported correctly. Unplugging was observed to be detected. Two identical keyboards are untested. The Windows backend uses the Raw Input API. It creates a hidden message-only window on its own thread and registers for keyboard input with `RIDEV_INPUTSINK`, so it receives every keyboard's keys even while your window isn't focused.
 
 - **Needs:** nothing. No driver, no administrator rights, no hooks.
-- **Keyboards already connected** are announced at startup. A keyboard plugged in *later* is meant to be announced on its first keypress, not at the moment of plugging in, and unplugging is meant to be noticed through the OS's device-change notification for keyboards that have been seen. **We haven't tried either with a real keyboard yet.**
-- **Names and ids.** The name comes from the HID product string, which the backend reads by briefly opening the device handle with zero access rights; if that fails, it falls back to the Device Manager name from the registry. The registry fallback is what our test machine's built-in keyboard uses; the HID product-string path (what USB keyboards should use) is untested. USB vendor and product ids come from the device path, so built-in keyboards (which often have none) show `----:----`. The port isn't reported.
+- **Keyboards already connected** are announced at startup. Unplugging is reported through the OS's device-change notification (observed working). A keyboard plugged in *later* is announced when Windows reports its arrival, not on its first keypress (an earlier version waited for the first keypress, which testing showed was a bug). **Tested with the ZSA Moonlander:** it was announced on plug-in, both to the viewer and to `manykey watch`, as a single keyboard. A keyboard that comes back is meant to get its earlier `KeyboardId` again, since interfaces are matched by their physical device (container id) or, for built-in keyboards, by device path; that part has not been checked.
+- **One keyboard, several interfaces.** A composite USB keyboard can show up to Windows as more than one keyboard interface (the ZSA Moonlander exposes two, of which only one carries keystrokes). manykey groups the interfaces of one physical device, using Windows' *container id*, and reports a single keyboard (confirmed with the Moonlander, which was previously reported twice): announced when its first interface appears and removed when its last one goes. Built-in keyboards all share a generic container, so they are told apart by device path instead. A receiver that serves several keyboards under one container would be merged into one; that's a limitation of what Windows exposes. The `path` you see is that of the first interface seen.
+- **Names and ids.** The name comes from the HID product string, which the backend reads by briefly opening the device handle with zero access rights; if that fails, it falls back to the Device Manager name from the registry. The HID product string is what the USB keyboards we tried use ("USB Keyboard", "Moonlander Mark I"); the registry fallback is what the built-in keyboard uses. USB vendor and product ids come from the device path, so built-in keyboards (which often have none) show `----:----`. The port isn't reported.
 - **Key repeat** arrives as repeated `Pressed` events. There is no separate `Repeat`.
 - **Registration is per process.** Windows lets a process register for raw keyboard input once, and a later registration replaces an earlier one. If another component in your process (winit, SDL, an engine) also registers for raw keyboard input, one of you silently stops receiving. See `reclaim_registration` under [Options](#options).
 - **Focused scope** (`OwnProcessFocused`) is implemented with a foreground-window change notification, and drops events while none of your windows is in front.
@@ -163,7 +164,7 @@ manykey is organized around **backends**. A backend is the piece that talks to o
 
 ### Linux: evdev
 
-*Status: builds, not yet run on real hardware.* The evdev backend reads the kernel's `/dev/input/event*` devices directly, on one thread per keyboard, and rescans `/proc/bus/input/devices` twice a second to notice keyboards being plugged and unplugged.
+*Status: tested against virtual keyboards in CI, not yet on physical hardware.* In GitHub's Linux CI the backend found a keyboard with its kernel name and ids, reported press, repeat and release, announced a second keyboard plugged in while running, and reported both removals. The evdev backend reads the kernel's `/dev/input/event*` devices directly, on one thread per keyboard, and rescans `/proc/bus/input/devices` twice a second to notice keyboards being plugged and unplugged.
 
 - **Needs read access to the input devices**, normally membership of the `input` group. See [Linux permissions](#linux-permissions); this is a real cost.
 - **Works under X11, Wayland and the text console**, because it doesn't talk to the display server at all. That also means it has **no idea which window has focus**, so `OwnProcessFocused` returns an error instead of silently reporting everything.
@@ -223,7 +224,7 @@ manykey reports positions, not characters. Turning a key into text depends on th
 
 **Some events are generated by manykey, not by the keyboard.** Nearly everything you receive is what the OS reported. The exceptions:
 
-- If a keyboard is **unplugged while holding keys**, manykey emits a `Released` for each held key just before `KeyboardRemoved`. Switch: `release_on_unplug`. (Written for both backends; not yet tested with a real unplug.)
+- If a keyboard is **unplugged while holding keys**, manykey can emit a `Released` for each held key just before `KeyboardRemoved`. Switch: `release_on_unplug`. (Raw Input backend; untested with a real unplug. On Linux the kernel itself releases held keys when a device disappears, so you get a `Native` release there, as CI confirmed with a virtual keyboard, and manykey's own release is only a fallback.)
 - Under `OwnProcessFocused`, when your process **loses focus**, manykey emits a `Released` for every held key, then goes quiet until focus returns. Keys still physically held when focus returns are *not* re-announced; they look "up" until their next press. Switch: `release_on_focus_loss`. (Raw Input only, since that's the only backend with focused scope.)
 - `Overflow` is also manykey's own marker. It's a notification, not a key event, and has no switch.
 
@@ -293,6 +294,8 @@ Reading `/dev/input/event*` normally needs membership of the `input` group (or a
 
 **Why don't my media or brightness keys show up?** Some media keys arrive as ordinary keyboard keys and are reported (play/pause, next/previous, stop, mute, volume). Other keys, brightness among them on the keyboard we tried, didn't show up at all. Our current guess is that they're sent as a different kind of HID report that the Windows backend doesn't read yet, but we haven't confirmed that. On Linux, evdev defines brightness key codes that the evdev backend maps, though we haven't tested them.
 
+**Why is there an extra "keyboard" that only produces Unknown keys?** Some devices that aren't keyboards you type on still identify themselves as keyboards to Windows: laptop hotkey and Fn controllers, for example, or other HID devices such as HID-over-I2C ones. We saw one called "HIDI2C Device". Its keys aren't ones manykey knows, so they show as `Unknown` with the raw scancode (the viewer prints it as `?0x....`). We haven't confirmed what that device was; it's a good candidate for the brightness and Fn keys that otherwise never showed up.
+
 **Can it tell two identical keyboards apart?** While they're plugged in, that's the intent: each gets its own id. We haven't been able to test with two identical keyboards. Recognising which is which across runs is best-effort; see [Keyboards](#keyboards).
 
 **Does it work in remote-desktop sessions, virtual machines or with virtual keyboards?** **Untested.** We don't know how remote-desktop clients, virtual machines, KVM switches or software keyboards appear to each backend. Expect surprises, and please report what you see.
@@ -359,7 +362,7 @@ manykey isn't the first attempt at this problem. These are the related projects 
 Roughly in order, and subject to change:
 
 - Continuous integration: build and test on Windows and Linux on every change, including driving the Linux backend with virtual keyboards. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
-- Validate on real hardware: several USB keyboards, hot-plugging, identical keyboards, and the Linux backend. Then fix what that finds; add a clear "permission denied" explanation and a `manykey doctor` command.
+- Validate on real hardware: identical keyboards, replugging a keyboard (does it get its id back?), more makes of USB keyboard, and the Linux backend. Then fix what that finds; add a clear "permission denied" explanation and a `manykey doctor` command.
 - Build the XInput2 backend for lower-privilege Linux use (the `backend` option already exists to select it).
 - A shared Windows backend so several `Listener`s in one process don't compete.
 - `keyboards()` for synchronous inventory, and `held_keys()` snapshots for recovering from overflow.

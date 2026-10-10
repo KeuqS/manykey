@@ -3,7 +3,7 @@
 
 Creates keyboards through /dev/uinput (needs root), runs `manykey watch`
 against them, and checks key events, hot-plug, and that unplugging a keyboard
-while a key is held produces a synthesized release followed by its removal.
+while a key is held produces a release followed by its removal.
 
 Usage: sudo python3 ci/linux-uinput-smoke.py target/debug/manykey
 """
@@ -54,6 +54,42 @@ class VirtualKeyboard:
         os.close(self.fd)
 
 
+def evaluate(out):
+    """Check manykey's output; returns (failures, notes)."""
+    notes = []
+    failures = []
+
+    m = re.search(r"^\+ keyboard (\d+) 1234:5678 manykey-ci-kbd$", out, re.M)
+    if not m:
+        failures.append("virtual keyboard 1 was not announced with its name and USB ids")
+        kid = None
+    else:
+        kid = m.group(1)
+    if not re.search(r"^\+ keyboard \d+ 1234:9999 manykey-ci-kbd-two$", out, re.M):
+        failures.append("hot-plugged keyboard 2 was not announced")
+    if kid:
+        if not re.search(rf"^keyboard {kid}\s+A\s+down", out, re.M):
+            failures.append("A press not reported for keyboard 1")
+        if not re.search(rf"^keyboard {kid}\s+A\s+up", out, re.M):
+            failures.append("A release not reported for keyboard 1")
+        # When a device disappears while a key is held, the Linux input core
+        # releases the key itself before disconnecting it, so the release is
+        # normally a *native* event. manykey's own synthesized release is only a
+        # fallback for when that doesn't happen. Either is acceptable here.
+        released = re.search(rf"^keyboard {kid}\s+B\s+up\b(.*)$", out, re.M)
+        removed = re.search(rf"^- keyboard {kid}$", out, re.M)
+        if not released:
+            failures.append("no release for B when keyboard 1 was unplugged while held")
+        if not removed:
+            failures.append("keyboard 1 removal was not reported")
+        if released and removed and released.start() > removed.start():
+            failures.append("the release came after the removal, not before")
+        if released:
+            who = "manykey (synthesized)" if "[synthesized]" in released.group(1) else "the kernel (native)"
+            notes.append(f"the release for the held key came from {who}")
+    return failures, notes
+
+
 def main(binary):
     kb = VirtualKeyboard("manykey-ci-kbd", 0x1234, 0x5678)
     time.sleep(1.0)  # let udev/the kernel publish the device
@@ -80,30 +116,12 @@ def main(binary):
     reader.join(timeout=3)
 
     out = "\n".join(lines)
-    print("== manykey watch output\n" + out)
-    failures = []
-
-    m = re.search(r"^\+ keyboard (\d+) 1234:5678 manykey-ci-kbd$", out, re.M)
-    if not m:
-        failures.append("virtual keyboard 1 was not announced with its name and USB ids")
-        kid = None
-    else:
-        kid = m.group(1)
-    if not re.search(r"^\+ keyboard \d+ 1234:9999 manykey-ci-kbd-two$", out, re.M):
-        failures.append("hot-plugged keyboard 2 was not announced")
-    if kid:
-        if not re.search(rf"^keyboard {kid}\s+A\s+down", out, re.M):
-            failures.append("A press not reported for keyboard 1")
-        if not re.search(rf"^keyboard {kid}\s+A\s+up", out, re.M):
-            failures.append("A release not reported for keyboard 1")
-        synth = re.search(rf"^keyboard {kid}\s+B\s+up .*\[synthesized\]$", out, re.M)
-        removed = re.search(rf"^- keyboard {kid}$", out, re.M)
-        if not synth:
-            failures.append("no synthesized release for B when keyboard 1 was unplugged while held")
-        if not removed:
-            failures.append("keyboard 1 removal was not reported")
-        if synth and removed and synth.start() > removed.start():
-            failures.append("synthesized release came after the removal, not before")
+    # Hold-repeat lines are noise in a log; the checks below don't need them.
+    print("== manykey watch output (repeat lines omitted)\n"
+          + "\n".join(l for l in lines if " repeat " not in l))
+    failures, notes = evaluate(out)
+    for n in notes:
+        print("note: " + n)
 
     if failures:
         print("\nFAILED:\n  - " + "\n  - ".join(failures))

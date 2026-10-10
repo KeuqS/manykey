@@ -4,7 +4,7 @@ Thanks for taking an interest. manykey is an early prototype, so the most valuab
 
 ## The most useful thing you can do: test on real hardware
 
-So far the Windows backend has only been run on one machine with a single built-in keyboard, and the Linux backend has never been run. Please try any of these and tell us what happened (even "it worked" is useful, because the README marks these as untested):
+So far the Windows backend has been run on one machine with a built-in keyboard, a USB keyboard and a ZSA Moonlander at once, and the Linux backend has only been run against *virtual* keyboards in CI, never on physical hardware. Please try any of these and tell us what happened (even "it worked" is useful, because the README marks these as untested):
 
 - Plug in two or more USB keyboards and run `manykey watch`. Does each keystroke carry the right keyboard number?
 - Plug a keyboard in and unplug it while `manykey watch` is running. Is it announced and removed correctly?

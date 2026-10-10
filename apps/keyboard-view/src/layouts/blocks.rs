@@ -7,6 +7,7 @@ use manykey::Key;
 /// Esc and F1-F12 with the usual gaps.
 pub fn function_row(b: &mut Builder) {
     b.key(Key::Escape, "Esc", 0.0, 0.0, 1.0, 1.0);
+    #[rustfmt::skip]
     let fkeys = [
         (Key::F1, "F1", 2.0), (Key::F2, "F2", 3.0), (Key::F3, "F3", 4.0), (Key::F4, "F4", 5.0),
         (Key::F5, "F5", 6.5), (Key::F6, "F6", 7.5), (Key::F7, "F7", 8.5), (Key::F8, "F8", 9.5),
@@ -25,6 +26,7 @@ pub fn print_scroll_pause(b: &mut Builder) {
 
 /// Number row through the Enter row; identical on every layout we draw.
 pub fn number_through_enter(b: &mut Builder) {
+    #[rustfmt::skip]
     let row1 = [
         (Key::Grave, "`"), (Key::Digit1, "1"), (Key::Digit2, "2"), (Key::Digit3, "3"),
         (Key::Digit4, "4"), (Key::Digit5, "5"), (Key::Digit6, "6"), (Key::Digit7, "7"),
@@ -37,6 +39,7 @@ pub fn number_through_enter(b: &mut Builder) {
     b.key(Key::Backspace, "Bksp", 13.0, 1.5, 2.0, 1.0);
 
     b.key(Key::Tab, "Tab", 0.0, 2.5, 1.5, 1.0);
+    #[rustfmt::skip]
     let row2 = [
         (Key::Q, "Q"), (Key::W, "W"), (Key::E, "E"), (Key::R, "R"), (Key::T, "T"),
         (Key::Y, "Y"), (Key::U, "U"), (Key::I, "I"), (Key::O, "O"), (Key::P, "P"),
@@ -48,6 +51,7 @@ pub fn number_through_enter(b: &mut Builder) {
     b.key(Key::Backslash, "\\", 13.5, 2.5, 1.5, 1.0);
 
     b.key(Key::CapsLock, "Caps", 0.0, 3.5, 1.75, 1.0);
+    #[rustfmt::skip]
     let row3 = [
         (Key::A, "A"), (Key::S, "S"), (Key::D, "D"), (Key::F, "F"), (Key::G, "G"),
         (Key::H, "H"), (Key::J, "J"), (Key::K, "K"), (Key::L, "L"),
@@ -68,6 +72,7 @@ pub fn shift_row(b: &mut Builder) {
 
 /// Z through slash, shared by every shift row.
 pub fn letters_zxcv(b: &mut Builder) {
+    #[rustfmt::skip]
     let row4 = [
         (Key::Z, "Z"), (Key::X, "X"), (Key::C, "C"), (Key::V, "V"), (Key::B, "B"),
         (Key::N, "N"), (Key::M, "M"), (Key::Comma, ","), (Key::Period, "."), (Key::Slash, "/"),
@@ -143,6 +148,7 @@ pub fn full_size(b: &mut Builder, with_numpad: bool) {
 
 /// F13-F24 on their own row, lined up under the right-hand clusters.
 pub fn f13_to_f24(b: &mut Builder) {
+    #[rustfmt::skip]
     let fx = [
         (Key::F13, "F13"), (Key::F14, "F14"), (Key::F15, "F15"), (Key::F16, "F16"),
         (Key::F17, "F17"), (Key::F18, "F18"), (Key::F19, "F19"), (Key::F20, "F20"),
@@ -155,6 +161,7 @@ pub fn f13_to_f24(b: &mut Builder) {
 
 /// Media/brightness keys: round, spread out, grouped by purpose, on their own row.
 pub fn media(b: &mut Builder) {
+    #[rustfmt::skip]
     let media: [(Key, &'static str, f32); 9] = [
         (Key::MediaPrev, "Prev", 0.0), (Key::MediaPlayPause, "Play", 1.6),
         (Key::MediaNext, "Next", 3.2), (Key::MediaStop, "Stop", 4.8),

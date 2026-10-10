@@ -5,7 +5,9 @@
 //! the EV_REP capability bit, which separates real keyboards from power buttons
 //! and the like).
 
-use crate::{from_evdev, Backend, Event, EventOrigin, EventSink, KeyEvent, KeyState, KeyboardId, KeyboardInfo, Options, Scope};
+use crate::{
+    from_evdev, Backend, Event, EventOrigin, EventSink, KeyEvent, KeyState, KeyboardId, KeyboardInfo, Options, Scope,
+};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Read};
@@ -195,7 +197,13 @@ fn read_device(mut file: File, id: KeyboardId, tx: &EventSink, stop: &AtomicBool
             2 => KeyState::Repeat,
             _ => continue,
         };
-        tx.send(Event::Key(KeyEvent { keyboard: id, key: from_evdev(code), native_code: code, state, origin: EventOrigin::Native }));
+        tx.send(Event::Key(KeyEvent {
+            keyboard: id,
+            key: from_evdev(code),
+            native_code: code,
+            state,
+            origin: EventOrigin::Native,
+        }));
     }
 }
 

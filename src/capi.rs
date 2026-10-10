@@ -252,6 +252,10 @@ fn options_from_c(o: &manykey_options) -> Result<Options, String> {
 }
 
 /// Fill `*out` with the default options (what `manykey_open` uses).
+///
+/// # Safety
+///
+/// `out` must be NULL or point to memory valid for writing one `manykey_options`.
 #[no_mangle]
 pub unsafe extern "C" fn manykey_options_default(out: *mut manykey_options) {
     if !out.is_null() {
@@ -267,6 +271,10 @@ pub unsafe extern "C" fn manykey_options_default(out: *mut manykey_options) {
 
 /// Start listening with default options. Returns 0 and sets `*out` on
 /// success, -1 on error.
+///
+/// # Safety
+///
+/// `out` must be NULL or point to memory valid for writing one pointer.
 #[no_mangle]
 pub unsafe extern "C" fn manykey_open(out: *mut *mut manykey_context) -> c_int {
     open_with(Options::default(), out)
@@ -274,6 +282,10 @@ pub unsafe extern "C" fn manykey_open(out: *mut *mut manykey_context) -> c_int {
 
 /// Start listening with the given options. Returns 0 and sets `*out` on
 /// success, -1 on error (see `manykey_last_error`).
+///
+/// # Safety
+///
+/// `options` must be NULL or point to a valid, initialised `manykey_options`, and `out` must be NULL or point to memory valid for writing one pointer.
 #[no_mangle]
 pub unsafe extern "C" fn manykey_open_with(options: *const manykey_options, out: *mut *mut manykey_context) -> c_int {
     if options.is_null() || (*options).size < std::mem::size_of::<manykey_options>() as u32 {
@@ -307,6 +319,10 @@ unsafe fn open_with(options: Options, out: *mut *mut manykey_context) -> c_int {
 }
 
 /// Stop listening and free the context. NULL is allowed.
+///
+/// # Safety
+///
+/// `c` must be NULL, or a context returned by `manykey_open`/`manykey_open_with` that has not already been closed. It must not be used again afterwards.
 #[no_mangle]
 pub unsafe extern "C" fn manykey_close(c: *mut manykey_context) {
     if !c.is_null() {
@@ -316,6 +332,10 @@ pub unsafe extern "C" fn manykey_close(c: *mut manykey_context) {
 
 /// Non-blocking. Returns 1 and fills `*out` if an event was ready, 0 if not,
 /// -1 on error.
+///
+/// # Safety
+///
+/// `c` must be NULL or a live context, and `out` must be NULL or point to a writable `manykey_event` whose `size` field has been set.
 #[no_mangle]
 pub unsafe extern "C" fn manykey_poll(c: *mut manykey_context, out: *mut manykey_event) -> c_int {
     let (Some(c), Some(out)) = (ctx(c), event_out(out)) else { return -1 };
@@ -330,12 +350,12 @@ pub unsafe extern "C" fn manykey_poll(c: *mut manykey_context, out: *mut manykey
 
 /// Wait up to `timeout_ms` (negative = forever) for an event. Returns 1 and
 /// fills `*out` on an event, 0 on timeout, -1 on error.
+///
+/// # Safety
+///
+/// `c` must be NULL or a live context, and `out` must be NULL or point to a writable `manykey_event` whose `size` field has been set.
 #[no_mangle]
-pub unsafe extern "C" fn manykey_wait(
-    c: *mut manykey_context,
-    out: *mut manykey_event,
-    timeout_ms: c_int,
-) -> c_int {
+pub unsafe extern "C" fn manykey_wait(c: *mut manykey_context, out: *mut manykey_event, timeout_ms: c_int) -> c_int {
     let (Some(c), Some(out)) = (ctx(c), event_out(out)) else { return -1 };
     let ev = if timeout_ms < 0 {
         Some(c.listener.recv())
@@ -353,12 +373,20 @@ pub unsafe extern "C" fn manykey_wait(
 
 /// OS handle signalled while events are pending (Linux: fd for poll/epoll;
 /// Windows: event HANDLE). -1 if unavailable. Don't read or close it.
+///
+/// # Safety
+///
+/// `c` must be NULL or a live context.
 #[no_mangle]
 pub unsafe extern "C" fn manykey_wait_handle(c: *mut manykey_context) -> isize {
     ctx(c).map_or(-1, |c| c.listener.wait_handle())
 }
 
 /// Number of events discarded because the queue overflowed.
+///
+/// # Safety
+///
+/// `c` must be NULL or a live context.
 #[no_mangle]
 pub unsafe extern "C" fn manykey_dropped_events(c: *mut manykey_context) -> u64 {
     ctx(c).map_or(0, |c| c.listener.dropped_events())
@@ -366,6 +394,10 @@ pub unsafe extern "C" fn manykey_dropped_events(c: *mut manykey_context) -> u64 
 
 /// Look up a keyboard announced by a `KEYBOARD_ADDED` event. Returns 0 and
 /// fills `*out`, or -1 if the id is unknown.
+///
+/// # Safety
+///
+/// `c` must be NULL or a live context, and `out` must be NULL or point to a writable `manykey_keyboard_info` whose `size` field has been set.
 #[no_mangle]
 pub unsafe extern "C" fn manykey_get_keyboard_info(
     c: *mut manykey_context,
@@ -394,6 +426,10 @@ pub unsafe extern "C" fn manykey_get_keyboard_info(
 /// Write the name of a HID key (e.g. "A", "LeftShift") into `buf` as a
 /// NUL-terminated string, truncating to `len`. Returns the full length
 /// needed excluding the NUL, like `snprintf`.
+///
+/// # Safety
+///
+/// `buf` must be NULL, or point to memory valid for writing `len` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn manykey_key_name(key: u32, buf: *mut c_char, len: usize) -> usize {
     let name = Key(key).name();
@@ -482,8 +518,26 @@ mod tests {
         assert_eq!(d.backend, BackendKind::Auto);
         // The C defaults must agree with the Rust defaults.
         let r = Options::default();
-        assert_eq!((d.capacity, d.scope, d.reclaim_registration, d.include_injected, d.release_on_unplug, d.release_on_focus_loss, d.backend),
-                   (r.capacity, r.scope, r.reclaim_registration, r.include_injected, r.release_on_unplug, r.release_on_focus_loss, r.backend));
+        assert_eq!(
+            (
+                d.capacity,
+                d.scope,
+                d.reclaim_registration,
+                d.include_injected,
+                d.release_on_unplug,
+                d.release_on_focus_loss,
+                d.backend
+            ),
+            (
+                r.capacity,
+                r.scope,
+                r.reclaim_registration,
+                r.include_injected,
+                r.release_on_unplug,
+                r.release_on_focus_loss,
+                r.backend
+            )
+        );
 
         let custom = manykey_options {
             capacity: 0,
@@ -502,7 +556,13 @@ mod tests {
 
     #[test]
     fn rejects_unknown_options() {
-        let base = manykey_options { size: std::mem::size_of::<manykey_options>() as u32, capacity: 1, scope: 0, flags: 0, backend: 0 };
+        let base = manykey_options {
+            size: std::mem::size_of::<manykey_options>() as u32,
+            capacity: 1,
+            scope: 0,
+            flags: 0,
+            backend: 0,
+        };
         assert!(options_from_c(&manykey_options { scope: 99, ..base }).is_err());
         assert!(options_from_c(&manykey_options { flags: 1 << 20, ..base }).is_err());
         assert!(options_from_c(&manykey_options { backend: 99, ..base }).is_err());

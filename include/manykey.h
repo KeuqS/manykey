@@ -193,59 +193,105 @@ const char *manykey_last_error(void);
 
 /*
  Fill `*out` with the default options (what `manykey_open` uses).
+
+ # Safety
+
+ `out` must be NULL or point to memory valid for writing one `manykey_options`.
  */
 void manykey_options_default(manykey_options *out);
 
 /*
  Start listening with default options. Returns 0 and sets `*out` on
  success, -1 on error.
+
+ # Safety
+
+ `out` must be NULL or point to memory valid for writing one pointer.
  */
 int manykey_open(manykey_context **out);
 
 /*
  Start listening with the given options. Returns 0 and sets `*out` on
  success, -1 on error (see `manykey_last_error`).
+
+ # Safety
+
+ `options` must be NULL or point to a valid, initialised `manykey_options`, and `out` must be NULL or point to memory valid for writing one pointer.
  */
-int manykey_open_with(const manykey_options *options, manykey_context **out);
+int manykey_open_with(const manykey_options *options,
+                      manykey_context **out);
 
 /*
  Stop listening and free the context. NULL is allowed.
+
+ # Safety
+
+ `c` must be NULL, or a context returned by `manykey_open`/`manykey_open_with` that has not already been closed. It must not be used again afterwards.
  */
 void manykey_close(manykey_context *c);
 
 /*
  Non-blocking. Returns 1 and fills `*out` if an event was ready, 0 if not,
  -1 on error.
+
+ # Safety
+
+ `c` must be NULL or a live context, and `out` must be NULL or point to a writable `manykey_event` whose `size` field has been set.
  */
-int manykey_poll(manykey_context *c, manykey_event *out);
+int manykey_poll(manykey_context *c,
+                 manykey_event *out);
 
 /*
  Wait up to `timeout_ms` (negative = forever) for an event. Returns 1 and
  fills `*out` on an event, 0 on timeout, -1 on error.
+
+ # Safety
+
+ `c` must be NULL or a live context, and `out` must be NULL or point to a writable `manykey_event` whose `size` field has been set.
  */
-int manykey_wait(manykey_context *c, manykey_event *out, int timeout_ms);
+int manykey_wait(manykey_context *c,
+                 manykey_event *out,
+                 int timeout_ms);
 
 /*
  OS handle signalled while events are pending (Linux: fd for poll/epoll;
  Windows: event HANDLE). -1 if unavailable. Don't read or close it.
+
+ # Safety
+
+ `c` must be NULL or a live context.
  */
 ptrdiff_t manykey_wait_handle(manykey_context *c);
 
 /*
  Number of events discarded because the queue overflowed.
+
+ # Safety
+
+ `c` must be NULL or a live context.
  */
 uint64_t manykey_dropped_events(manykey_context *c);
 
 /*
  Look up a keyboard announced by a `KEYBOARD_ADDED` event. Returns 0 and
  fills `*out`, or -1 if the id is unknown.
+
+ # Safety
+
+ `c` must be NULL or a live context, and `out` must be NULL or point to a writable `manykey_keyboard_info` whose `size` field has been set.
  */
-int manykey_get_keyboard_info(manykey_context *c, uint64_t id, manykey_keyboard_info *out);
+int manykey_get_keyboard_info(manykey_context *c,
+                              uint64_t id,
+                              manykey_keyboard_info *out);
 
 /*
  Write the name of a HID key (e.g. "A", "LeftShift") into `buf` as a
  NUL-terminated string, truncating to `len`. Returns the full length
  needed excluding the NUL, like `snprintf`.
+
+ # Safety
+
+ `buf` must be NULL, or point to memory valid for writing `len` bytes.
  */
 size_t manykey_key_name(uint32_t key, char *buf, size_t len);
 

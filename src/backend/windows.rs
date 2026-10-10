@@ -3,7 +3,10 @@
 //! `RIDEV_INPUTSINK` delivers input even when our process isn't focused, and
 //! `RIDEV_DEVNOTIFY` gives hot-plug notifications.
 
-use crate::{from_windows_scancode, Backend, Event, EventOrigin, EventSink, Key, KeyEvent, KeyState, KeyboardId, KeyboardInfo, Options, Scope};
+use crate::{
+    from_windows_scancode, Backend, Event, EventOrigin, EventSink, Key, KeyEvent, KeyState, KeyboardId, KeyboardInfo,
+    Options, Scope,
+};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io;
@@ -51,7 +54,12 @@ impl Drop for WindowsBackend {
 struct State {
     tx: EventSink,
     by_handle: HashMap<isize, KeyboardId>,
-    by_path: HashMap<String, KeyboardId>,
+    /// Physical-device identity (container id, else device path) -> id. A
+    /// keyboard with several raw-input interfaces (a composite USB device) is
+    /// one keyboard, so its interfaces share an id.
+    by_identity: HashMap<String, KeyboardId>,
+    /// How many of a keyboard's interfaces are currently connected.
+    live: Presence,
     next_id: u64,
     scope: Scope,
     include_injected: bool,
@@ -96,37 +104,176 @@ impl State {
 
     fn release(&mut self, keyboard: KeyboardId, native_code: u32, key: Key) {
         self.held.remove(&(keyboard, native_code));
-        self.tx.send(Event::Key(KeyEvent { keyboard, key, native_code, state: KeyState::Released, origin: EventOrigin::Synthesized }));
+        self.tx.send(Event::Key(KeyEvent {
+            keyboard,
+            key,
+            native_code,
+            state: KeyState::Released,
+            origin: EventOrigin::Synthesized,
+        }));
     }
 }
 
 thread_local! {
+    // Already a `const` initializer; clippy (1.96) still suggests making it const.
+    #[allow(clippy::missing_const_for_thread_local)]
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
 }
 
 impl State {
-    /// Resolve a raw-input device handle to an id, announcing it if new.
+    /// Resolve a raw-input device handle to an id. The keyboard is announced when
+    /// its first interface is seen (not for each additional interface).
     fn id_for(&mut self, handle: HANDLE) -> KeyboardId {
         if let Some(id) = self.by_handle.get(&(handle as isize)) {
             return *id;
         }
         let path = device_path(handle).unwrap_or_else(|| format!("unknown:{:?}", handle));
-        let id = *self.by_path.entry(path.clone()).or_insert_with(|| {
+        let identity = identity_for(handle, &path);
+        let id = *self.by_identity.entry(identity).or_insert_with(|| {
             self.next_id += 1;
             KeyboardId(self.next_id)
         });
         self.by_handle.insert(handle as isize, id);
-        let (vendor_id, product_id) = parse_vid_pid(&path);
-        let name = friendly_name(handle, &path);
-        self.tx.send(Event::KeyboardAdded(KeyboardInfo {
-            id,
-            name,
-            path,
-            vendor_id,
-            product_id,
-            location: None,
-        }));
+        if self.live.add(id) {
+            let (vendor_id, product_id) = parse_vid_pid(&path);
+            let name = friendly_name(handle, &path);
+            self.tx.send(Event::KeyboardAdded(KeyboardInfo { id, name, path, vendor_id, product_id, location: None }));
+        }
         id
+    }
+
+    /// A raw-input interface went away. When it was the keyboard's last one, the
+    /// keyboard is gone: release what it was holding (if the caller wants that)
+    /// and announce the removal.
+    fn handle_removed(&mut self, handle: HANDLE) {
+        // By removal time the handle can't be queried, so only devices we've
+        // already seen can be reported.
+        let Some(id) = self.by_handle.remove(&(handle as isize)) else { return };
+        if !self.live.remove(id) {
+            return;
+        }
+        let held: Vec<_> = self.held.iter().filter(|((kb, _), _)| *kb == id).map(|(k, v)| (*k, *v)).collect();
+        for ((kb, native), key) in held {
+            if self.release_on_unplug {
+                self.release(kb, native, key);
+            } else {
+                self.held.remove(&(kb, native));
+            }
+        }
+        self.tx.send(Event::KeyboardRemoved(id));
+    }
+}
+
+/// Counts how many interfaces of each keyboard are connected.
+#[derive(Default)]
+struct Presence(HashMap<KeyboardId, usize>);
+
+impl Presence {
+    /// Returns true if this is the keyboard's first interface.
+    fn add(&mut self, id: KeyboardId) -> bool {
+        let n = self.0.entry(id).or_insert(0);
+        *n += 1;
+        *n == 1
+    }
+
+    /// Returns true if that was the keyboard's last interface.
+    fn remove(&mut self, id: KeyboardId) -> bool {
+        match self.0.get_mut(&id) {
+            Some(n) if *n > 1 => {
+                *n -= 1;
+                false
+            }
+            Some(_) => {
+                self.0.remove(&id);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// What makes two raw-input interfaces the same keyboard: Windows' container id
+/// (shared by every interface of one physical device) when it has a meaningful
+/// one, otherwise the device path.
+fn identity_for(handle: HANDLE, path: &str) -> String {
+    if !handle.is_null() {
+        if let Some(c) = container_id(path) {
+            return format!("container:{c}");
+        }
+    }
+    format!("path:{path}")
+}
+
+/// Format a container id GUID, or `None` for the generic "built into this PC"
+/// containers that many unrelated devices share (so they can't identify one).
+fn format_container(g: [u8; 16]) -> Option<String> {
+    let system = g[..8].iter().all(|&b| b == 0) && g[8..].iter().all(|&b| b == 0xFF);
+    if g.iter().all(|&b| b == 0) || system {
+        return None;
+    }
+    let d1 = u32::from_le_bytes([g[0], g[1], g[2], g[3]]);
+    let d2 = u16::from_le_bytes([g[4], g[5]]);
+    let d3 = u16::from_le_bytes([g[6], g[7]]);
+    Some(format!(
+        "{{{d1:08x}-{d2:04x}-{d3:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}}}",
+        g[8], g[9], g[10], g[11], g[12], g[13], g[14], g[15]
+    ))
+}
+
+/// The container id of the physical device behind a raw-input interface path.
+fn container_id(path: &str) -> Option<String> {
+    use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
+        CM_Get_DevNode_PropertyW, CM_Get_Device_Interface_PropertyW, CM_Locate_DevNodeW, CM_LOCATE_DEVNODE_NORMAL,
+        CR_SUCCESS,
+    };
+    use windows_sys::Win32::Devices::Properties::{DEVPKEY_Device_ContainerId, DEVPKEY_Device_InstanceId};
+    let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+    unsafe {
+        // interface path -> the device instance id of the device that owns it
+        let (mut ptype, mut size) = (0u32, 0u32);
+        CM_Get_Device_Interface_PropertyW(
+            wide.as_ptr(),
+            &DEVPKEY_Device_InstanceId,
+            &mut ptype,
+            null_mut(),
+            &mut size,
+            0,
+        );
+        if size == 0 {
+            return None;
+        }
+        let mut buf = vec![0u8; size as usize];
+        let rc = CM_Get_Device_Interface_PropertyW(
+            wide.as_ptr(),
+            &DEVPKEY_Device_InstanceId,
+            &mut ptype,
+            buf.as_mut_ptr(),
+            &mut size,
+            0,
+        );
+        if rc != CR_SUCCESS {
+            return None;
+        }
+        let instance: Vec<u16> = buf.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        // instance id -> device node -> container id
+        let mut devinst = 0u32;
+        if CM_Locate_DevNodeW(&mut devinst, instance.as_ptr(), CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS {
+            return None;
+        }
+        let mut guid = [0u8; 16];
+        let (mut gtype, mut gsize) = (0u32, 16u32);
+        let rc = CM_Get_DevNode_PropertyW(
+            devinst,
+            &DEVPKEY_Device_ContainerId,
+            &mut gtype,
+            guid.as_mut_ptr(),
+            &mut gsize,
+            0,
+        );
+        if rc != CR_SUCCESS || gsize != 16 {
+            return None;
+        }
+        format_container(guid)
     }
 }
 
@@ -167,7 +314,15 @@ fn registry_device_name(path: &str) -> Option<String> {
         let mut buf = [0u16; 256];
         let mut bytes = (buf.len() * 2) as u32;
         let rc = unsafe {
-            RegGetValueW(HKEY_LOCAL_MACHINE, subkey.as_ptr(), vname.as_ptr(), RRF_RT_REG_SZ, null_mut(), buf.as_mut_ptr().cast(), &mut bytes)
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                subkey.as_ptr(),
+                vname.as_ptr(),
+                RRF_RT_REG_SZ,
+                null_mut(),
+                buf.as_mut_ptr().cast(),
+                &mut bytes,
+            )
         };
         if rc != 0 {
             continue;
@@ -245,10 +400,8 @@ fn run_message_loop(tx: EventSink, options: Options, ready: mpsc::Sender<io::Res
         // Ignore failure: the class may already exist from an earlier Listener.
         RegisterClassW(&wc);
 
-        let hwnd = CreateWindowExW(
-            0, class_name.as_ptr(), null(), 0, 0, 0, 0, 0,
-            HWND_MESSAGE, null_mut(), hinst, null(),
-        );
+        let hwnd =
+            CreateWindowExW(0, class_name.as_ptr(), null(), 0, 0, 0, 0, 0, HWND_MESSAGE, null_mut(), hinst, null());
         if hwnd.is_null() {
             let _ = ready.send(Err(io::Error::last_os_error()));
             return;
@@ -265,7 +418,8 @@ fn run_message_loop(tx: EventSink, options: Options, ready: mpsc::Sender<io::Res
             let mut st = State {
                 tx,
                 by_handle: HashMap::new(),
-                by_path: HashMap::new(),
+                by_identity: HashMap::new(),
+                live: Presence::default(),
                 next_id: 0,
                 scope: options.scope,
                 include_injected: options.include_injected,
@@ -367,6 +521,15 @@ unsafe fn still_registered(hwnd: HWND) -> bool {
     list.iter().take(n as usize).any(|d| d.usUsagePage == 1 && d.usUsage == 6 && d.hwndTarget == hwnd)
 }
 
+/// Is this raw-input device handle a keyboard (as opposed to a mouse or other HID device)?
+unsafe fn is_keyboard_device(handle: HANDLE) -> bool {
+    let mut info: RID_DEVICE_INFO = zeroed();
+    info.cbSize = size_of::<RID_DEVICE_INFO>() as u32;
+    let mut size = info.cbSize;
+    let n = GetRawInputDeviceInfoW(handle, RIDI_DEVICEINFO, (&mut info as *mut RID_DEVICE_INFO).cast(), &mut size);
+    n != u32::MAX && info.dwType == RIM_TYPEKEYBOARD
+}
+
 fn enumerate_keyboards() -> Vec<HANDLE> {
     unsafe {
         let sz = size_of::<RAWINPUTDEVICELIST>() as u32;
@@ -377,11 +540,7 @@ fn enumerate_keyboards() -> Vec<HANDLE> {
         if got == u32::MAX {
             return Vec::new();
         }
-        list.iter()
-            .take(got as usize)
-            .filter(|d| d.dwType == RIM_TYPEKEYBOARD)
-            .map(|d| d.hDevice)
-            .collect()
+        list.iter().take(got as usize).filter(|d| d.dwType == RIM_TYPEKEYBOARD).map(|d| d.hDevice).collect()
     }
 }
 
@@ -396,23 +555,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             STATE.with(|s| {
                 if let Some(st) = s.borrow_mut().as_mut() {
                     if wparam as u32 == GIDC_REMOVAL {
-                        // By removal time the handle can't be queried, so
-                        // only report devices we've already seen.
-                        if let Some(id) = st.by_handle.remove(&(handle as isize)) {
-                            // Unplugged mid-keypress: release what it was holding
-                            // (if the caller wants that), and forget it either way.
-                            let held: Vec<_> = st.held.iter().filter(|((kb, _), _)| *kb == id).map(|(k, v)| (*k, *v)).collect();
-                            for ((kb, native), key) in held {
-                                if st.release_on_unplug {
-                                    st.release(kb, native, key);
-                                } else {
-                                    st.held.remove(&(kb, native));
-                                }
-                            }
-                            st.tx.send(Event::KeyboardRemoved(id));
-                        }
+                        st.handle_removed(handle);
                     }
-                    // Arrivals are announced lazily on their first key event.
+                    if wparam as u32 == GIDC_ARRIVAL && is_keyboard_device(handle) {
+                        // Announce now, not on the first keypress. A keyboard we've
+                        // seen before (same device path) gets its old id back.
+                        st.id_for(handle);
+                    }
                 }
             });
             0
@@ -461,20 +610,54 @@ unsafe fn handle_raw_input(h: HRAWINPUT) {
     } else if kb.Flags as u32 & RI_KEY_E1 != 0 {
         code |= 0xE100;
     }
-    let state = if kb.Flags as u32 & RI_KEY_BREAK != 0 {
-        KeyState::Released
-    } else {
-        KeyState::Pressed
-    };
+    let state = if kb.Flags as u32 & RI_KEY_BREAK != 0 { KeyState::Released } else { KeyState::Pressed };
     STATE.with(|s| {
         if let Some(st) = s.borrow_mut().as_mut() {
             if !st.focused || (raw.header.hDevice.is_null() && !st.include_injected) {
                 return;
             }
             let keyboard = st.id_for(raw.header.hDevice);
-            let ev = KeyEvent { keyboard, key: from_windows_scancode(code), native_code: code, state, origin: EventOrigin::Native };
+            let ev = KeyEvent {
+                keyboard,
+                key: from_windows_scancode(code),
+                native_code: code,
+                state,
+                origin: EventOrigin::Native,
+            };
             st.track(&ev);
             st.tx.send(Event::Key(ev));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_keyboard_with_two_interfaces_is_announced_once_and_removed_once() {
+        let mut p = Presence::default();
+        let kb = KeyboardId(1);
+        assert!(p.add(kb), "first interface announces the keyboard");
+        assert!(!p.add(kb), "second interface does not announce it again");
+        assert!(!p.remove(kb), "losing one interface keeps the keyboard");
+        assert!(p.remove(kb), "losing the last interface removes it");
+        assert!(!p.remove(kb), "removing something already gone is a no-op");
+        assert!(p.add(kb), "plugging it back in announces it again");
+    }
+
+    #[test]
+    fn container_ids_that_cannot_identify_a_device_are_rejected() {
+        assert_eq!(format_container([0; 16]), None);
+        // {00000000-0000-0000-FFFF-FFFFFFFFFFFF}: "built into this PC", shared by unrelated devices
+        let mut system = [0xFFu8; 16];
+        system[..8].fill(0);
+        assert_eq!(format_container(system), None);
+    }
+
+    #[test]
+    fn real_container_ids_format_like_guids() {
+        let g = [0x78, 0x56, 0x34, 0x12, 0xBC, 0x9A, 0xF0, 0xDE, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF];
+        assert_eq!(format_container(g).as_deref(), Some("{12345678-9abc-def0-0123-456789abcdef}"));
+    }
 }

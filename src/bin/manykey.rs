@@ -49,7 +49,9 @@ fn main() {
         "watch" => {
             for event in listener.iter() {
                 match event {
-                    Event::KeyboardAdded(k) => println!("+ keyboard {} {} {}", k.id.0, id_str(k.vendor_id, k.product_id), k.name),
+                    Event::KeyboardAdded(k) => {
+                        println!("+ keyboard {} {} {}", k.id.0, id_str(k.vendor_id, k.product_id), k.name)
+                    }
                     Event::KeyboardRemoved(id) => println!("- keyboard {}", id.0),
                     Event::Overflow { dropped } => println!("! overflow ({dropped} events dropped so far)"),
                     Event::Key(k) => {
@@ -59,7 +61,13 @@ fn main() {
                             KeyState::Repeat => "repeat",
                         };
                         let note = if k.origin == EventOrigin::Synthesized { "  [synthesized]" } else { "" };
-                        println!("keyboard {}  {:<12} {:<6} (native {:#06x}){note}", k.keyboard.0, k.key.name(), s, k.native_code);
+                        println!(
+                            "keyboard {}  {:<12} {:<6} (native {:#06x}){note}",
+                            k.keyboard.0,
+                            k.key.name(),
+                            s,
+                            k.native_code
+                        );
                     }
                 }
             }

@@ -88,11 +88,7 @@ mod tests {
         }
         assert_eq!(
             keys,
-            vec![
-                (a, Key::W, KeyState::Pressed),
-                (b, Key::W, KeyState::Pressed),
-                (a, Key::W, KeyState::Released),
-            ]
+            vec![(a, Key::W, KeyState::Pressed), (b, Key::W, KeyState::Pressed), (a, Key::W, KeyState::Released),]
         );
     }
 
@@ -112,10 +108,7 @@ mod tests {
         let rest: Vec<(Key, KeyState)> = std::iter::from_fn(|| l.try_recv())
             .filter_map(|e| if let Event::Key(k) = e { Some((k.key, k.state)) } else { None })
             .collect();
-        assert_eq!(
-            rest,
-            vec![(Key::A, KeyState::Released), (Key::B, KeyState::Pressed), (Key::C, KeyState::Pressed)]
-        );
+        assert_eq!(rest, vec![(Key::A, KeyState::Released), (Key::B, KeyState::Pressed), (Key::C, KeyState::Pressed)]);
     }
 
     #[test]

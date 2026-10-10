@@ -55,13 +55,10 @@ jobs:
       - name: C example compiles against the header
         run: gcc -std=c11 -Wall -Wextra -Werror -fsyntax-only -Iinclude examples/watch.c
 
-  # Formatting and lints. Informational until a one-time cleanup lands
-  # (rustfmt currently wants changes, and clippy has a few warnings).
-  # When that's done, delete `continue-on-error`.
+  # Formatting (see rustfmt.toml) and lints, with warnings treated as errors.
   lint:
-    name: rustfmt and clippy (informational)
+    name: rustfmt and clippy
     runs-on: ubuntu-latest
-    continue-on-error: true
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4

@@ -190,7 +190,9 @@ pub enum Event {
     /// be wrong"**: clear it (a lost release would otherwise leave a key
     /// stuck down). `dropped` is the cumulative discard count. Releases are
     /// the last key events to be discarded, so this is rare in practice.
-    Overflow { dropped: u64 },
+    Overflow {
+        dropped: u64,
+    },
 }
 
 /// A platform input source. Dropping it stops event delivery.

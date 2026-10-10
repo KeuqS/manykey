@@ -18,16 +18,14 @@ fn platform_default() -> Option<BackendKind> {
 }
 
 fn unavailable(kind: BackendKind) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::Unsupported,
-        format!("the {} backend is not available on this platform", kind.name()),
-    )
+    io::Error::new(io::ErrorKind::Unsupported, format!("the {} backend is not available on this platform", kind.name()))
 }
 
 pub(crate) fn start_default(sink: EventSink, options: Options) -> io::Result<Box<dyn Backend>> {
     let kind = match options.backend {
-        BackendKind::Auto => platform_default()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "no backend for this OS"))?,
+        BackendKind::Auto => {
+            platform_default().ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "no backend for this OS"))?
+        }
         explicit => explicit,
     };
     match kind {
