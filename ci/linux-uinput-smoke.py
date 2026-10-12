@@ -34,9 +34,9 @@ class VirtualKeyboard:
         self.fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
         fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_KEY)
         fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_REP)
-        # manykey (like udev) treats devices with Esc, the digits and Q to D
-        # (codes 1 to 31) as keyboards.
-        for key in range(1, 120):
+        # manykey (like udev) treats devices with the first 31 key codes
+        # (Esc through S) as keyboards.
+        for key in range(1, 32):
             fcntl.ioctl(self.fd, UI_SET_KEYBIT, key)
         # struct uinput_user_dev: name[80], input_id, ff_effects_max, abs arrays
         dev = (name.encode().ljust(80, b"\0")
