@@ -4,6 +4,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-12
+
 ### Fixed
 
 - **Linux:** a keyboard with several input interfaces (for example a ZSA Moonlander, which has two key reports) is now one keyboard with one id, as on Windows, instead of one per interface.
