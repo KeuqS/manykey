@@ -181,7 +181,8 @@ manykey is organized around **backends**. A backend is the piece that talks to o
 - **Works under X11, Wayland and the text console**, because it doesn't talk to the display server at all. That also means it has **no idea which window has focus**, so `OwnProcessFocused` returns an error instead of silently reporting everything.
 - **What it reports:** the kernel's device name, USB ids, and the physical port. A replugged keyboard in the same port is meant to get the same `KeyboardId` back.
 - **Key repeat** is reported as `Repeat`.
-- **Which devices count as keyboards** is decided by a heuristic (the kernel marks it as a keyboard and it supports key repeat). Virtual keyboards created by other software, such as remappers, can show up as keyboards too.
+- **Which devices count as keyboards** uses the same test as udev: the device has Esc, the number row and Q through D. That leaves out power buttons and laptop hotkey devices. Virtual keyboards created by other software, such as remappers, can show up as keyboards too, and so can a mouse's keyboard interface (some gaming mice have one for macro buttons, and claim every key).
+- **A keyboard with several interfaces is one keyboard,** as on Windows. Many USB keyboards expose their media and system keys, and sometimes a second key report, as extra input devices. manykey groups the interfaces of one device (same port and USB ids, plus the serial or Bluetooth address when there is one) under one `KeyboardId`, and also reads the media and system-key interfaces of those keyboards.
 
 ### Linux: other backends
 
@@ -307,7 +308,7 @@ Reading `/dev/input/event*` normally needs membership of the `input` group (or a
 
 **Why don't my media or brightness keys show up?** Some media keys arrive as ordinary keyboard keys and are reported (play/pause, next/previous, stop, mute, volume). Other keys, brightness among them on the keyboard we tried, didn't show up at all. Our current guess is that they're sent as a different kind of HID report that the Windows backend doesn't read yet, but we haven't confirmed that. On Linux, evdev defines brightness key codes that the evdev backend maps, though we haven't tested them.
 
-**Why is there an extra "keyboard" that only produces Unknown keys?** Some devices that aren't keyboards you type on still identify themselves as keyboards to Windows: laptop hotkey and Fn controllers, for example, or other HID devices such as HID-over-I2C ones. We saw one called "HIDI2C Device". Its keys aren't ones manykey knows, so they show as `Unknown` with the raw scancode (the viewer prints it as `?0x....`). We haven't confirmed what that device was; it's a good candidate for the brightness and Fn keys that otherwise never showed up.
+**Why is there an extra "keyboard" that only produces Unknown keys?** Some devices that aren't keyboards you type on still identify themselves as keyboards: laptop hotkey and Fn controllers, for example, or other HID devices such as HID-over-I2C ones. On Windows we saw one called "HIDI2C Device". Its keys aren't ones manykey knows, so they show as `Unknown` with the raw scancode (the viewer prints it as `?0x....`). We haven't confirmed what that device was; it's a good candidate for the brightness and Fn keys that otherwise never showed up. On Linux, a gaming mouse's keyboard interface (for its macro buttons) shows up the same way.
 
 **Can it tell two identical keyboards apart?** While they're plugged in, that's the intent: each gets its own id. We haven't been able to test with two identical keyboards. Recognising which is which across runs is best-effort; see [Keyboards](#keyboards).
 
